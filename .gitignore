@@ -1,7 +1,10 @@
-# Never commit keys or live configs
+# Configs hold private keys: only the examples are committed.
+*.json
+!*.example.json
 *.key
-*.pem
-*.conf
-!*.example.conf
-.env
+
+# Build output
+/vpn
+/dist/
+
 .DS_Store

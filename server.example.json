@@ -1,0 +1,13 @@
+{
+  "private_key": "PASTE_OUTPUT_OF_vpn_genkey_HERE",
+  "listen_port": 51820,
+  "address": "10.8.0.1/24",
+  "nat_interface": "eth0",
+  "peers": [
+    {
+      "name": "laptop",
+      "public_key": "PASTE_THE_LAPTOPS_PUBLIC_KEY_HERE",
+      "address": "10.8.0.2"
+    }
+  ]
+}
