@@ -1,0 +1,7 @@
+# Never commit keys or live configs
+*.key
+*.pem
+*.conf
+!*.example.conf
+.env
+.DS_Store
