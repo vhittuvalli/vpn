@@ -1,6 +1,8 @@
 {
   "private_key": "PASTE_OUTPUT_OF_vpn_genkey_HERE",
   "listen_port": 51820,
+  "https_port": 443,
+  "server_name": "www.example.com",
   "address": "10.8.0.1/24",
   "nat_interface": "eth0",
   "peers": [

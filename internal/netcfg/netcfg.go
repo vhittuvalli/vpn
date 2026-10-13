@@ -13,7 +13,13 @@ import (
 type Cleanup func()
 
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	return runInput("", name, args...)
+}
+
+func runInput(stdin, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

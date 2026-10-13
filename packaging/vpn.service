@@ -1,0 +1,16 @@
+# systemd unit for running the VPN server.
+#
+#   sudo cp vpn.service /etc/systemd/system/
+#   sudo mkdir -p /etc/vpn && sudo cp server.json /etc/vpn/
+#   sudo systemctl enable --now vpn
+[Unit]
+Description=vpn server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/vpn server -c /etc/vpn/server.json
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,9 +1,9 @@
 package vpn
 
 import (
+	"bytes"
 	"context"
 	"log"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,13 +14,16 @@ import (
 )
 
 type Client struct {
-	static    protocol.Key
-	serverKey protocol.Key
+	id        *protocol.Identity
+	serverKey protocol.PublicKey
 	dev       tun.Device
-	conn      *net.UDPConn // connected to the server
+	conn      ClientTransport
+	fragments *protocol.Reassembler[struct{}]
 
 	mu          sync.Mutex
 	pending     *protocol.InitiatorHandshake
+	cookie      []byte
+	cookieTime  time.Time
 	current     *protocol.Session
 	previous    *protocol.Session
 	established chan struct{}
@@ -30,17 +33,18 @@ type Client struct {
 	OnConnect func()
 }
 
-func NewClient(cfg *config.Client, dev tun.Device, conn *net.UDPConn) *Client {
+func NewClient(cfg *config.Client, dev tun.Device, conn ClientTransport) *Client {
 	return &Client{
-		static:      cfg.PrivateKey,
+		id:          protocol.NewIdentity(cfg.PrivateKey),
 		serverKey:   cfg.ServerPublicKey,
 		dev:         dev,
 		conn:        conn,
+		fragments:   protocol.NewReassembler[struct{}](),
 		established: make(chan struct{}, 1),
 	}
 }
 
-// Run keeps the tunnel up until ctx is canceled or the device or socket fails.
+// Run keeps the tunnel up until ctx is canceled or the device or transport fails.
 func (c *Client) Run(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
@@ -49,7 +53,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}()
 	go c.handshakeLoop(ctx)
 	go c.keepaliveLoop(ctx)
-	err := firstError(c.udpLoop, c.tunLoop)
+	err := firstError(c.receiveLoop, c.tunLoop)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -61,7 +65,12 @@ func (c *Client) Run(ctx context.Context) error {
 func (c *Client) handshakeLoop(ctx context.Context) {
 	connected := false
 	for {
-		hs, msg, err := protocol.CreateInitiation(c.static, c.serverKey, protocol.RandomIndex(), time.Now())
+		if w, ok := c.conn.(readyWaiter); ok {
+			if err := w.WaitReady(ctx); err != nil {
+				return
+			}
+		}
+		hs, err := protocol.CreateInitiation(c.id, c.serverKey, protocol.RandomIndex(), time.Now())
 		if err != nil {
 			log.Printf("creating handshake: %v", err)
 			return
@@ -69,7 +78,7 @@ func (c *Client) handshakeLoop(ctx context.Context) {
 		c.mu.Lock()
 		c.pending = hs
 		c.mu.Unlock()
-		c.send(msg)
+		c.sendInitiation(hs)
 
 		wait := protocol.HandshakeRetry
 		select {
@@ -78,14 +87,14 @@ func (c *Client) handshakeLoop(ctx context.Context) {
 		case <-c.established:
 			if !connected {
 				connected = true
-				log.Printf("connected to %s", c.conn.RemoteAddr())
+				log.Printf("connected to %s", c.conn)
 				if c.OnConnect != nil {
 					c.OnConnect()
 				}
 			}
 			wait = protocol.RekeyAfterTime
 		case <-time.After(protocol.HandshakeRetry):
-			log.Printf("no handshake response from %s, retrying", c.conn.RemoteAddr())
+			log.Printf("no handshake response from %s, retrying", c.conn)
 			continue
 		}
 		select {
@@ -96,8 +105,24 @@ func (c *Client) handshakeLoop(ctx context.Context) {
 	}
 }
 
+// sendInitiation adds MACs (with the current cookie, if any) and sends the
+// initiation as fragments.
+func (c *Client) sendInitiation(hs *protocol.InitiatorHandshake) {
+	c.mu.Lock()
+	cookie := c.cookie
+	if time.Since(c.cookieTime) > protocol.CookieLifetime {
+		cookie = nil
+	}
+	protocol.AddMACs(hs.Message, c.serverKey, cookie)
+	msg := bytes.Clone(hs.Message)
+	c.mu.Unlock()
+	for _, frag := range protocol.Fragment(msg) {
+		c.send(frag)
+	}
+}
+
 // keepaliveLoop sends an empty packet when the tunnel has been idle, so NAT
-// routers between client and server keep the UDP mapping open.
+// routers between client and server keep the connection open.
 func (c *Client) keepaliveLoop(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -122,45 +147,35 @@ func (c *Client) keepaliveLoop(ctx context.Context) {
 	}
 }
 
-func (c *Client) udpLoop() error {
+func (c *Client) receiveLoop() error {
 	buf := make([]byte, 65535)
 	for {
 		n, err := c.conn.Read(buf)
 		if err != nil {
 			return err
 		}
-		msg := buf[:n]
-		index, ok := protocol.ReceiverIndex(msg)
-		if !ok {
+		if n == 0 {
 			continue
 		}
+		msg := buf[:n]
 		switch msg[0] {
-		case protocol.TypeResponse:
-			c.handleResponse(msg, index)
+		case protocol.TypeFragment:
+			if whole, ok := c.fragments.Add(struct{}{}, msg); ok {
+				c.handleResponse(whole)
+			}
+		case protocol.TypeCookieReply:
+			c.handleCookieReply(msg)
 		case protocol.TypeData:
-			c.mu.Lock()
-			var sess *protocol.Session
-			for _, s := range []*protocol.Session{c.current, c.previous} {
-				if s != nil && s.LocalIndex == index {
-					sess = s
-				}
-			}
-			c.mu.Unlock()
-			if sess == nil {
-				continue
-			}
-			packet, err := sess.Open(msg)
-			if err != nil || len(packet) == 0 {
-				continue
-			}
-			if _, err := c.dev.Write(packet); err != nil {
-				log.Printf("writing to %s: %v", c.dev.Name(), err)
-			}
+			c.handleData(msg)
 		}
 	}
 }
 
-func (c *Client) handleResponse(msg []byte, index uint32) {
+func (c *Client) handleResponse(msg []byte) {
+	index, ok := protocol.ReceiverIndex(msg)
+	if !ok || msg[0] != protocol.TypeResponse || !protocol.CheckMAC1(msg, c.id.Public) {
+		return
+	}
 	c.mu.Lock()
 	hs := c.pending
 	if hs == nil || hs.LocalIndex != index {
@@ -170,6 +185,7 @@ func (c *Client) handleResponse(msg []byte, index uint32) {
 	sess, err := hs.ConsumeResponse(msg)
 	if err != nil {
 		c.mu.Unlock()
+		log.Printf("bad handshake response: %v", err)
 		return
 	}
 	c.pending = nil
@@ -183,6 +199,50 @@ func (c *Client) handleResponse(msg []byte, index uint32) {
 	// Confirm the new session to the server right away.
 	if out, err := sess.Seal(nil); err == nil {
 		c.send(out)
+	}
+}
+
+// handleCookieReply stores the cookie and resends the pending initiation
+// with it, so a server under load answers without waiting for a retry.
+func (c *Client) handleCookieReply(msg []byte) {
+	c.mu.Lock()
+	hs := c.pending
+	if hs == nil {
+		c.mu.Unlock()
+		return
+	}
+	cookie, err := protocol.ConsumeCookieReply(msg, hs.Message, c.serverKey)
+	if err != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.cookie, c.cookieTime = cookie, time.Now()
+	c.mu.Unlock()
+	c.sendInitiation(hs)
+}
+
+func (c *Client) handleData(msg []byte) {
+	index, ok := protocol.ReceiverIndex(msg)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	var sess *protocol.Session
+	for _, s := range []*protocol.Session{c.current, c.previous} {
+		if s != nil && s.LocalIndex == index {
+			sess = s
+		}
+	}
+	c.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	packet, err := sess.Open(msg)
+	if err != nil || len(packet) == 0 {
+		return
+	}
+	if _, err := c.dev.Write(packet); err != nil {
+		log.Printf("writing to %s: %v", c.dev.Name(), err)
 	}
 }
 

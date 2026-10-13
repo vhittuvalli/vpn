@@ -1,14 +1,17 @@
-// Command vpn is a small from-scratch VPN.
+// Command vpn is a small from-scratch post-quantum VPN.
 //
+//	vpn version                     print the version
 //	vpn genkey                      print a new private key
 //	vpn pubkey < private.key        print the public key for a private key
 //	sudo vpn server -c server.json  run the server
 //	sudo vpn client -c client.json  connect to a server
+//	sudo vpn reset                  undo kill switch and DNS after a crash
 package main
 
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/vhittuvalli/vpn/internal/config"
@@ -27,11 +31,16 @@ import (
 	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
+// version is set at release time with -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 const usage = `usage:
+  vpn version                     print the version
   vpn genkey                      print a new private key
   vpn pubkey < private.key        print the public key for a private key
   sudo vpn server -c server.json  run the server
   sudo vpn client -c client.json  connect to a server
+  sudo vpn reset                  undo kill switch and DNS after a crash
 `
 
 func main() {
@@ -42,6 +51,8 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "version", "-v", "--version":
+		fmt.Println("vpn", version)
 	case "genkey":
 		err = genkey()
 	case "pubkey":
@@ -50,6 +61,8 @@ func main() {
 		err = runServer(os.Args[2:])
 	case "client":
 		err = runClient(os.Args[2:])
+	case "reset":
+		err = reset()
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -73,11 +86,18 @@ func pubkey() error {
 	if err != nil && line == "" {
 		return errors.New("pubkey: expected a private key on stdin")
 	}
-	k, err := protocol.ParseKey(strings.TrimSpace(line))
+	k, err := protocol.ParsePrivateKey(strings.TrimSpace(line))
 	if err != nil {
 		return err
 	}
 	fmt.Println(k.Public())
+	return nil
+}
+
+func requireRoot() error {
+	if os.Geteuid() != 0 {
+		return errors.New("this needs root: run with sudo")
+	}
 	return nil
 }
 
@@ -87,10 +107,18 @@ func configFlag(name string, args []string) (string, error) {
 	if err := fs.Parse(args); err != nil {
 		return "", err
 	}
-	if os.Geteuid() != 0 {
-		return "", errors.New("creating a network interface needs root: run with sudo")
+	return *path, requireRoot()
+}
+
+func reset() error {
+	if err := requireRoot(); err != nil {
+		return err
 	}
-	return *path, nil
+	if err := netcfg.Reset(); err != nil {
+		return err
+	}
+	log.Print("kill switch removed and DNS restored")
+	return nil
 }
 
 func runServer(args []string) error {
@@ -102,6 +130,7 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
+	public := cfg.PrivateKey.Public()
 
 	dev, err := tun.Create()
 	if err != nil {
@@ -119,18 +148,38 @@ func runServer(args []string) error {
 		defer undo()
 	}
 
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: cfg.ListenPort})
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{Port: cfg.ListenPort})
 	if err != nil {
 		return err
 	}
-	log.Printf("server %s listening on UDP %d, tunnel %s on %s, %d peer(s)",
-		cfg.PrivateKey.Public(), cfg.ListenPort, cfg.Address, dev.Name(), len(cfg.Peers))
+	transports := []vpn.ServerTransport{vpn.NewUDPServer(udp)}
+	log.Printf("listening on UDP %d", cfg.ListenPort)
+	if cfg.HTTPSPort != 0 {
+		cert, err := loadCert(cfg)
+		if err != nil {
+			return err
+		}
+		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.HTTPSPort))
+		if err != nil {
+			return err
+		}
+		transports = append(transports, vpn.NewHTTPSServer(pc, cert, public))
+		log.Printf("listening on HTTPS (HTTP/3) %d", cfg.HTTPSPort)
+	}
+	log.Printf("server %s, tunnel %s on %s, %d peer(s)", public, cfg.Address, dev.Name(), len(cfg.Peers))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = vpn.NewServer(cfg, dev, conn).Run(ctx)
+	err = vpn.NewServer(cfg, dev, transports...).Run(ctx)
 	log.Print("shutting down")
 	return err
+}
+
+func loadCert(cfg *config.Server) (tls.Certificate, error) {
+	if cfg.TLSCert != "" {
+		return tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+	}
+	return vpn.SelfSignedCert(cfg.ServerName)
 }
 
 func runClient(args []string) error {
@@ -146,7 +195,8 @@ func runClient(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolving server: %w", err)
 	}
-	serverIP, _ := netip.AddrFromSlice(raddr.IP.To4())
+	server := raddr.AddrPort()
+	server = netip.AddrPortFrom(server.Addr().Unmap(), server.Port())
 
 	dev, err := tun.Create()
 	if err != nil {
@@ -157,33 +207,70 @@ func runClient(args []string) error {
 		return err
 	}
 
-	conn, err := net.DialUDP("udp4", nil, raddr)
-	if err != nil {
-		return err
+	// The kill switch goes up before anything is sent, so there is no
+	// moment where traffic could leak.
+	var cleanups []netcfg.Cleanup
+	var cleanupMu sync.Mutex
+	addCleanup := func(c netcfg.Cleanup) {
+		cleanupMu.Lock()
+		cleanups = append(cleanups, c)
+		cleanupMu.Unlock()
 	}
-	log.Printf("tunnel %s on %s, connecting to %s", cfg.Address, dev.Name(), raddr)
+	defer func() {
+		cleanupMu.Lock()
+		defer cleanupMu.Unlock()
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}()
+	if cfg.KillSwitch {
+		undo, err := netcfg.KillSwitch(dev.Name(), server)
+		if err != nil {
+			return fmt.Errorf("kill switch: %w", err)
+		}
+		addCleanup(undo)
+		log.Print("kill switch on: traffic outside the VPN is blocked")
+	}
+
+	var conn vpn.ClientTransport
+	switch cfg.Transport {
+	case "https":
+		conn = vpn.NewHTTPSClient(server.String(), cfg.ServerName, cfg.ServerPublicKey)
+	default:
+		udp, err := net.DialUDP("udp4", nil, raddr)
+		if err != nil {
+			return err
+		}
+		conn = vpn.UDPClient{UDPConn: udp}
+	}
+	log.Printf("tunnel %s on %s, connecting to %s", cfg.Address, dev.Name(), conn)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	client := vpn.NewClient(cfg, dev, conn)
-	var undoRoutes netcfg.Cleanup
-	if cfg.RouteAllTraffic {
-		// Only take over the default route once the tunnel works, so a
-		// down server doesn't cut this machine off the internet.
-		client.OnConnect = func() {
-			undo, err := netcfg.RouteAllTraffic(dev.Name(), serverIP)
+	// Routes and DNS change only once the tunnel works, so a down server
+	// doesn't cut this machine off (unless the kill switch is on).
+	client.OnConnect = func() {
+		if cfg.RouteAllTraffic {
+			undo, err := netcfg.RouteAllTraffic(dev.Name(), server.Addr())
 			if err != nil {
 				log.Printf("routing all traffic: %v", err)
 				return
 			}
-			undoRoutes = undo
+			addCleanup(undo)
 			log.Print("all IPv4 traffic now goes through the VPN")
+		}
+		if len(cfg.DNS) > 0 {
+			undo, err := netcfg.SetDNS(dev.Name(), cfg.DNS)
+			if err != nil {
+				log.Printf("setting DNS: %v", err)
+				return
+			}
+			addCleanup(undo)
+			log.Printf("DNS now goes to %v through the VPN", cfg.DNS)
 		}
 	}
 	err = client.Run(ctx)
-	if undoRoutes != nil {
-		undoRoutes()
-	}
 	log.Print("disconnected")
 	return err
 }

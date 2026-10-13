@@ -3,5 +3,8 @@
   "address": "10.8.0.2/24",
   "server": "203.0.113.10:51820",
   "server_public_key": "PASTE_THE_SERVERS_PUBLIC_KEY_HERE",
-  "route_all_traffic": true
+  "transport": "udp",
+  "route_all_traffic": true,
+  "kill_switch": true,
+  "dns": ["1.1.1.1", "9.9.9.9"]
 }

@@ -13,24 +13,39 @@ import (
 	"github.com/vhittuvalli/vpn/internal/tun"
 )
 
+// DefaultLoadThreshold is how many handshakes per second the server handles
+// before it starts demanding cookies.
+const DefaultLoadThreshold = 50
+
 type Server struct {
-	static     protocol.Key
+	id         *protocol.Identity
 	dev        tun.Device
-	conn       *net.UDPConn
-	peersByKey map[protocol.Key]*serverPeer
+	transports []ServerTransport
+	peersByKey map[protocol.PublicKey]*serverPeer
 	peersByIP  map[netip.Addr]*serverPeer
+	cookies    *protocol.CookieChecker
+	fragments  *protocol.Reassembler[Endpoint]
+
+	// LoadThreshold may be changed before Run (tests set it to 0 so cookies
+	// are always required).
+	LoadThreshold int
 
 	mu       sync.RWMutex
 	sessions map[uint32]*serverSession // by our local index
+
+	loadMu       sync.Mutex
+	loadWindow   time.Time
+	loadCount    int
+	lastBySource map[string]time.Time
 }
 
 type serverPeer struct {
 	name      string
-	publicKey protocol.Key
+	publicKey protocol.PublicKey
 	ip        netip.Addr
 
 	mu            sync.Mutex
-	endpoint      netip.AddrPort // where the peer last sent from
+	endpoint      Endpoint // where the peer last sent from
 	current       *protocol.Session
 	previous      *protocol.Session // kept briefly so in-flight packets survive a rekey
 	lastTimestamp protocol.Timestamp
@@ -41,14 +56,19 @@ type serverSession struct {
 	peer *serverPeer
 }
 
-func NewServer(cfg *config.Server, dev tun.Device, conn *net.UDPConn) *Server {
+func NewServer(cfg *config.Server, dev tun.Device, transports ...ServerTransport) *Server {
+	id := protocol.NewIdentity(cfg.PrivateKey)
 	s := &Server{
-		static:     cfg.PrivateKey,
-		dev:        dev,
-		conn:       conn,
-		peersByKey: map[protocol.Key]*serverPeer{},
-		peersByIP:  map[netip.Addr]*serverPeer{},
-		sessions:   map[uint32]*serverSession{},
+		id:            id,
+		dev:           dev,
+		transports:    transports,
+		peersByKey:    map[protocol.PublicKey]*serverPeer{},
+		peersByIP:     map[netip.Addr]*serverPeer{},
+		cookies:       protocol.NewCookieChecker(id.Public),
+		fragments:     protocol.NewReassembler[Endpoint](),
+		LoadThreshold: DefaultLoadThreshold,
+		sessions:      map[uint32]*serverSession{},
+		lastBySource:  map[string]time.Time{},
 	}
 	for _, p := range cfg.Peers {
 		sp := &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address}
@@ -58,66 +78,92 @@ func NewServer(cfg *config.Server, dev tun.Device, conn *net.UDPConn) *Server {
 	return s
 }
 
-// Run serves until ctx is canceled or the device or socket fails.
+// Run serves until ctx is canceled or the device or a transport fails.
 func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
-		s.conn.Close()
+		for _, t := range s.transports {
+			t.Close()
+		}
 		s.dev.Close()
 	}()
 	go s.expireSessions(ctx)
-	err := firstError(s.udpLoop, s.tunLoop)
+	loops := []func() error{s.tunLoop}
+	for _, t := range s.transports {
+		loops = append(loops, func() error { return s.receiveLoop(t) })
+	}
+	err := firstError(loops...)
 	if ctx.Err() != nil {
 		return nil
 	}
 	return err
 }
 
-func (s *Server) udpLoop() error {
+func (s *Server) receiveLoop(t ServerTransport) error {
 	buf := make([]byte, 65535)
 	for {
-		n, from, err := s.conn.ReadFromUDPAddrPort(buf)
+		n, ep, err := t.Receive(buf)
 		if err != nil {
 			return err
 		}
-		from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
 		if n == 0 {
 			continue
 		}
-		switch buf[0] {
-		case protocol.TypeInitiation:
-			s.handleInitiation(buf[:n], from)
+		msg := buf[:n]
+		switch msg[0] {
 		case protocol.TypeData:
-			s.handleData(buf[:n], from)
+			s.handleData(msg, ep)
+		case protocol.TypeFragment:
+			if whole, ok := s.fragments.Add(ep, msg); ok && whole[0] == protocol.TypeInitiation {
+				s.handleInitiation(whole, ep)
+			}
 		}
 	}
 }
 
-func (s *Server) handleInitiation(msg []byte, from netip.AddrPort) {
-	init, err := protocol.ConsumeInitiation(s.static, msg)
-	if err != nil {
-		return // not for us, or forged
+func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
+	if !s.cookies.CheckMAC1(msg) {
+		return // sender doesn't know our public key
 	}
-	p := s.peersByKey[init.PeerStatic]
-	if p == nil {
-		log.Printf("rejected handshake from %s: unknown public key %s", from, init.PeerStatic)
+	if s.underLoad() {
+		if !s.cookies.CheckMAC2(msg, ep.String()) {
+			if reply, err := s.cookies.CreateReply(msg, ep.String()); err == nil {
+				ep.Send(reply)
+			}
+			return
+		}
+		if !s.allowSource(ep) {
+			return
+		}
+	}
+
+	init, err := protocol.ConsumeInitiation(s.id, msg, func(k protocol.PublicKey) bool {
+		return s.peersByKey[k] != nil
+	})
+	if err == protocol.ErrUnknownPeer {
+		log.Printf("rejected handshake from %s: unknown public key", ep)
 		return
 	}
+	if err != nil {
+		return
+	}
+	p := s.peersByKey[init.Peer]
 	p.mu.Lock()
 	if !init.Timestamp.After(p.lastTimestamp) {
 		p.mu.Unlock()
-		log.Printf("rejected handshake for %s from %s: replayed", p.name, from)
+		log.Printf("rejected handshake for %s from %s: replayed", p.name, ep)
 		return
 	}
 	p.lastTimestamp = init.Timestamp
 	p.mu.Unlock()
 
 	index := s.reserveIndex()
-	sess, resp, err := init.CreateResponse(index)
+	sess, resp, err := init.CreateResponse(s.id, index)
 	if err != nil {
 		s.dropIndex(index)
 		return
 	}
+	protocol.AddMACs(resp, p.publicKey, nil)
 	s.mu.Lock()
 	s.sessions[index] = &serverSession{Session: sess, peer: p}
 	s.mu.Unlock()
@@ -125,23 +171,52 @@ func (s *Server) handleInitiation(msg []byte, from netip.AddrPort) {
 	p.mu.Lock()
 	stale := p.previous
 	p.previous, p.current = p.current, sess
-	fresh := p.endpoint != from
-	p.endpoint = from
+	fresh := p.endpoint != ep
+	p.endpoint = ep
 	p.mu.Unlock()
 	if stale != nil {
 		s.dropIndex(stale.LocalIndex)
 	}
 
-	if _, err := s.conn.WriteToUDPAddrPort(resp, from); err != nil {
-		log.Printf("sending handshake response to %s: %v", p.name, err)
-		return
+	for _, frag := range protocol.Fragment(resp) {
+		if err := ep.Send(frag); err != nil {
+			log.Printf("sending handshake response to %s: %v", p.name, err)
+			return
+		}
 	}
 	if fresh {
-		log.Printf("peer %s (%s) connected from %s", p.name, p.ip, from)
+		log.Printf("peer %s (%s) connected from %s", p.name, p.ip, ep)
 	}
 }
 
-func (s *Server) handleData(msg []byte, from netip.AddrPort) {
+// underLoad counts handshakes in the current one-second window.
+func (s *Server) underLoad() bool {
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+	if time.Since(s.loadWindow) > time.Second {
+		s.loadWindow, s.loadCount = time.Now(), 0
+	}
+	s.loadCount++
+	return s.loadCount > s.LoadThreshold
+}
+
+// allowSource lets each source IP start at most one handshake per second
+// while the server is under load.
+func (s *Server) allowSource(ep Endpoint) bool {
+	host, _, err := net.SplitHostPort(ep.String())
+	if err != nil {
+		host = ep.String()
+	}
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+	if time.Since(s.lastBySource[host]) < time.Second {
+		return false
+	}
+	s.lastBySource[host] = time.Now()
+	return true
+}
+
+func (s *Server) handleData(msg []byte, ep Endpoint) {
 	index, ok := protocol.ReceiverIndex(msg)
 	if !ok {
 		return
@@ -158,9 +233,9 @@ func (s *Server) handleData(msg []byte, from netip.AddrPort) {
 	}
 	p := ss.peer
 	p.mu.Lock()
-	if p.endpoint != from {
-		log.Printf("peer %s moved to %s", p.name, from)
-		p.endpoint = from
+	if p.endpoint != ep {
+		log.Printf("peer %s moved to %s", p.name, ep)
+		p.endpoint = ep
 	}
 	p.mu.Unlock()
 	if len(packet) == 0 {
@@ -194,14 +269,14 @@ func (s *Server) tunLoop() error {
 		p.mu.Lock()
 		sess, ep := p.current, p.endpoint
 		p.mu.Unlock()
-		if sess == nil || !ep.IsValid() {
+		if sess == nil || ep == nil {
 			continue // peer not connected
 		}
 		out, err := sess.Seal(buf[:n])
 		if err != nil {
 			continue
 		}
-		s.conn.WriteToUDPAddrPort(out, ep)
+		ep.Send(out)
 	}
 }
 
@@ -239,6 +314,13 @@ func (s *Server) expireSessions(ctx context.Context) {
 			}
 		}
 		s.mu.Unlock()
+		s.loadMu.Lock()
+		for host, last := range s.lastBySource {
+			if time.Since(last) > time.Second {
+				delete(s.lastBySource, host)
+			}
+		}
+		s.loadMu.Unlock()
 		for _, p := range s.peersByKey {
 			p.mu.Lock()
 			if p.previous != nil && p.previous.Expired() {
@@ -246,8 +328,8 @@ func (s *Server) expireSessions(ctx context.Context) {
 			}
 			if p.current != nil && p.current.Expired() {
 				p.current = nil
+				p.endpoint = nil
 				log.Printf("peer %s disconnected (no handshake for %s)", p.name, protocol.RejectAfterTime)
-				p.endpoint = netip.AddrPort{}
 			}
 			p.mu.Unlock()
 		}
