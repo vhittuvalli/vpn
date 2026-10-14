@@ -11,6 +11,10 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/vpn server -c /etc/vpn/server.json
 Restart=on-failure
+# Signal only the server on stop, so the iptables commands it runs while
+# cleaning up aren't killed halfway and leave stale rules behind.
+KillMode=mixed
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
