@@ -1,6 +1,8 @@
 name: release
 
-# Push a tag like v0.1.0 to build binaries and publish a GitHub release.
+# Push a tag like v0.2.0 to build everything and publish a GitHub release:
+# VPN-<version>.dmg (the Mac app), command-line archives for macOS and
+# Linux, and checksums.txt covering all of them.
 on:
   push:
     tags: ["v*"]
@@ -9,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  cli:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +20,34 @@ jobs:
           go-version-file: go.mod
       - run: go test -race ./...
       - run: scripts/release.sh "$GITHUB_REF_NAME"
-      - run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --title "$GITHUB_REF_NAME" --generate-notes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli
+          path: dist/*.tar.gz
+
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: scripts/macapp.sh "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: dist/*.dmg
+
+  publish:
+    needs: [cli, mac-app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum *.dmg *.tar.gz > checksums.txt && cat checksums.txt
+      - run: gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/*.tar.gz dist/checksums.txt --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

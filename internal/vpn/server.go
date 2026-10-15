@@ -21,8 +21,6 @@ type Server struct {
 	id         *protocol.Identity
 	dev        tun.Device
 	transports []ServerTransport
-	peersByKey map[protocol.PublicKey]*serverPeer
-	peersByIP  map[netip.Addr]*serverPeer
 	cookies    *protocol.CookieChecker
 	fragments  *protocol.Reassembler[Endpoint]
 
@@ -32,6 +30,13 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[uint32]*serverSession // by our local index
+
+	// Peers can change while running (SetPeers), so the maps are guarded.
+	// A peer's name, key and address never change; a changed address
+	// replaces the peer.
+	peersMu    sync.RWMutex
+	peersByKey map[protocol.PublicKey]*serverPeer
+	peersByIP  map[netip.Addr]*serverPeer
 
 	loadMu       sync.Mutex
 	loadWindow   time.Time
@@ -62,20 +67,78 @@ func NewServer(cfg *config.Server, dev tun.Device, transports ...ServerTransport
 		id:            id,
 		dev:           dev,
 		transports:    transports,
-		peersByKey:    map[protocol.PublicKey]*serverPeer{},
-		peersByIP:     map[netip.Addr]*serverPeer{},
 		cookies:       protocol.NewCookieChecker(id.Public),
 		fragments:     protocol.NewReassembler[Endpoint](),
 		LoadThreshold: DefaultLoadThreshold,
 		sessions:      map[uint32]*serverSession{},
 		lastBySource:  map[string]time.Time{},
 	}
-	for _, p := range cfg.Peers {
-		sp := &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address}
-		s.peersByKey[p.PublicKey] = sp
-		s.peersByIP[p.Address] = sp
-	}
+	s.SetPeers(cfg.Peers)
 	return s
+}
+
+// SetPeers replaces the set of allowed peers. Peers that stay keep their
+// sessions; removed peers are disconnected at once.
+func (s *Server) SetPeers(peers []config.Peer) (added, removed int) {
+	byKey := map[protocol.PublicKey]*serverPeer{}
+	byIP := map[netip.Addr]*serverPeer{}
+	s.peersMu.Lock()
+	for _, p := range peers {
+		sp := s.peersByKey[p.PublicKey]
+		if sp == nil || sp.ip != p.Address || sp.name != p.Name {
+			sp = &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address}
+			added++
+		}
+		byKey[p.PublicKey], byIP[p.Address] = sp, sp
+	}
+	var gone []*serverPeer
+	for k, sp := range s.peersByKey {
+		if byKey[k] != sp {
+			gone = append(gone, sp)
+		}
+	}
+	s.peersByKey, s.peersByIP = byKey, byIP
+	s.peersMu.Unlock()
+
+	for _, sp := range gone {
+		sp.mu.Lock()
+		sp.current, sp.previous, sp.endpoint = nil, nil, nil
+		sp.mu.Unlock()
+	}
+	if len(gone) > 0 {
+		s.mu.Lock()
+		for i, ss := range s.sessions {
+			for _, sp := range gone {
+				if ss != nil && ss.peer == sp {
+					delete(s.sessions, i)
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
+	return added, len(gone)
+}
+
+func (s *Server) peerByKey(k protocol.PublicKey) *serverPeer {
+	s.peersMu.RLock()
+	defer s.peersMu.RUnlock()
+	return s.peersByKey[k]
+}
+
+func (s *Server) peerByIP(a netip.Addr) *serverPeer {
+	s.peersMu.RLock()
+	defer s.peersMu.RUnlock()
+	return s.peersByIP[a]
+}
+
+func (s *Server) allPeers() []*serverPeer {
+	s.peersMu.RLock()
+	defer s.peersMu.RUnlock()
+	out := make([]*serverPeer, 0, len(s.peersByKey))
+	for _, p := range s.peersByKey {
+		out = append(out, p)
+	}
+	return out
 }
 
 // Run serves until ctx is canceled or the device or a transport fails.
@@ -138,7 +201,7 @@ func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
 	}
 
 	init, err := protocol.ConsumeInitiation(s.id, msg, func(k protocol.PublicKey) bool {
-		return s.peersByKey[k] != nil
+		return s.peerByKey(k) != nil
 	})
 	if err == protocol.ErrUnknownPeer {
 		log.Printf("rejected handshake from %s: unknown public key", ep)
@@ -147,7 +210,10 @@ func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
 	if err != nil {
 		return
 	}
-	p := s.peersByKey[init.Peer]
+	p := s.peerByKey(init.Peer)
+	if p == nil {
+		return // revoked while the handshake was being checked
+	}
 	p.mu.Lock()
 	if !init.Timestamp.After(p.lastTimestamp) {
 		p.mu.Unlock()
@@ -232,6 +298,9 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 		return
 	}
 	p := ss.peer
+	if s.peerByKey(p.publicKey) != p {
+		return // revoked
+	}
 	p.mu.Lock()
 	if p.endpoint != ep {
 		log.Printf("peer %s moved to %s", p.name, ep)
@@ -262,7 +331,7 @@ func (s *Server) tunLoop() error {
 		if !ok {
 			continue
 		}
-		p := s.peersByIP[dst]
+		p := s.peerByIP(dst)
 		if p == nil {
 			continue
 		}
@@ -321,7 +390,7 @@ func (s *Server) expireSessions(ctx context.Context) {
 			}
 		}
 		s.loadMu.Unlock()
-		for _, p := range s.peersByKey {
+		for _, p := range s.allPeers() {
 			p.mu.Lock()
 			if p.previous != nil && p.previous.Expired() {
 				p.previous = nil

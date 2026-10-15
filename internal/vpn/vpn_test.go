@@ -97,6 +97,7 @@ func privateKey(t *testing.T) protocol.PrivateKey {
 type testNet struct {
 	server, client       *fakeTun
 	clientVPN            *Client
+	serverVPN            *Server
 	clientConn           ClientTransport
 	serverKey, clientKey protocol.PrivateKey
 }
@@ -137,6 +138,7 @@ func start(t *testing.T, transport string, loadThreshold int) *testNet {
 		}},
 	}, tn.server, st)
 	server.LoadThreshold = loadThreshold
+	tn.serverVPN = server
 	go server.Run(ctx)
 
 	switch transport {
@@ -221,6 +223,29 @@ func TestReplayDropped(t *testing.T) {
 	tn.server.expect(t, pkt)
 	tn.clientConn.Write(msg)
 	tn.server.expectNothing(t)
+}
+
+func TestPeerChangesWhileRunning(t *testing.T) {
+	tn := start(t, "udp", DefaultLoadThreshold)
+	laptop := config.Peer{Name: "laptop", PublicKey: tn.clientKey.Public(), Address: netip.MustParseAddr("10.8.0.2")}
+	phone := config.Peer{Name: "phone", PublicKey: privateKey(t).Public(), Address: netip.MustParseAddr("10.8.0.3")}
+
+	// Adding a device leaves the connected one alone.
+	if added, removed := tn.serverVPN.SetPeers([]config.Peer{laptop, phone}); added != 1 || removed != 0 {
+		t.Fatalf("adding phone: added %d, removed %d", added, removed)
+	}
+	up := ipv4Packet("10.8.0.2", "10.8.0.1", "still here")
+	tn.client.fromOS <- up
+	tn.server.expect(t, up)
+
+	// Revoking it cuts it off immediately, in both directions.
+	if added, removed := tn.serverVPN.SetPeers([]config.Peer{phone}); added != 0 || removed != 1 {
+		t.Fatalf("revoking laptop: added %d, removed %d", added, removed)
+	}
+	tn.client.fromOS <- ipv4Packet("10.8.0.2", "10.8.0.1", "revoked")
+	tn.server.expectNothing(t)
+	tn.server.fromOS <- ipv4Packet("10.8.0.1", "10.8.0.2", "revoked")
+	tn.client.expectNothing(t)
 }
 
 func TestUnknownClientRejected(t *testing.T) {

@@ -29,6 +29,7 @@ type Server struct {
 	Address      netip.Prefix // server's tunnel address, e.g. 10.8.0.1/24
 	MTU          int
 	NATInterface string // if set, share this interface's internet connection with clients
+	Endpoint     string // public IP or hostname clients connect to; goes into access keys
 	Peers        []Peer
 }
 
@@ -51,21 +52,49 @@ type Client struct {
 	DNS             []netip.Addr
 }
 
-type serverFile struct {
-	PrivateKey   string `json:"private_key"`
-	ListenPort   int    `json:"listen_port"`
-	HTTPSPort    int    `json:"https_port"`
-	ServerName   string `json:"server_name"`
-	TLSCert      string `json:"tls_cert"`
-	TLSKey       string `json:"tls_key"`
-	Address      string `json:"address"`
-	MTU          int    `json:"mtu"`
-	NATInterface string `json:"nat_interface"`
-	Peers        []struct {
-		Name      string `json:"name"`
-		PublicKey string `json:"public_key"`
-		Address   string `json:"address"`
-	} `json:"peers"`
+// ServerFile is server.json as stored on disk. `vpn invite` and `vpn revoke`
+// edit it and write it back; everything else uses the validated Server.
+type ServerFile struct {
+	PrivateKey   string     `json:"private_key"`
+	Endpoint     string     `json:"endpoint,omitempty"`
+	ListenPort   int        `json:"listen_port,omitempty"`
+	HTTPSPort    int        `json:"https_port,omitempty"`
+	ServerName   string     `json:"server_name,omitempty"`
+	TLSCert      string     `json:"tls_cert,omitempty"`
+	TLSKey       string     `json:"tls_key,omitempty"`
+	Address      string     `json:"address"`
+	MTU          int        `json:"mtu,omitempty"`
+	NATInterface string     `json:"nat_interface,omitempty"`
+	Peers        []PeerFile `json:"peers"`
+}
+
+type PeerFile struct {
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+	Address   string `json:"address"`
+}
+
+// ReadServerFile reads server.json without validating it.
+func ReadServerFile(path string) (*ServerFile, error) {
+	var f ServerFile
+	if err := decode(path, &f); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// Write saves f to path atomically, readable only by its owner (it holds the
+// server's private key).
+func (f *ServerFile) Write(path string) error {
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 type clientFile struct {
@@ -95,7 +124,7 @@ func decode(path string, v any) error {
 }
 
 func LoadServer(path string) (*Server, error) {
-	var f serverFile
+	var f ServerFile
 	if err := decode(path, &f); err != nil {
 		return nil, err
 	}
@@ -103,6 +132,7 @@ func LoadServer(path string) (*Server, error) {
 	s := &Server{
 		ListenPort: f.ListenPort, HTTPSPort: f.HTTPSPort, ServerName: f.ServerName,
 		TLSCert: f.TLSCert, TLSKey: f.TLSKey, MTU: f.MTU, NATInterface: f.NATInterface,
+		Endpoint: f.Endpoint,
 	}
 	if s.ListenPort == 0 {
 		s.ListenPort = DefaultUDPPort
@@ -122,9 +152,6 @@ func LoadServer(path string) (*Server, error) {
 	}
 	if s.Address, err = parseIPv4Prefix(f.Address); err != nil {
 		errs = append(errs, fmt.Errorf("address: %w", err))
-	}
-	if len(f.Peers) == 0 {
-		errs = append(errs, errors.New("peers: at least one peer is required"))
 	}
 	seenKey := map[protocol.PublicKey]bool{}
 	seenAddr := map[netip.Addr]bool{s.Address.Addr(): true}

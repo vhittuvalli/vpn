@@ -1,11 +1,5 @@
-// Command vpn is a small from-scratch post-quantum VPN.
-//
-//	vpn version                     print the version
-//	vpn genkey                      print a new private key
-//	vpn pubkey < private.key        print the public key for a private key
-//	sudo vpn server -c server.json  run the server
-//	sudo vpn client -c client.json  connect to a server
-//	sudo vpn reset                  undo kill switch and DNS after a crash
+// Command vpn is a small from-scratch post-quantum VPN. Run it without
+// arguments for usage. Inside VPN.app it starts the menu bar app.
 package main
 
 import (
@@ -17,17 +11,18 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 
+	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/config"
+	"github.com/vhittuvalli/vpn/internal/daemon"
 	"github.com/vhittuvalli/vpn/internal/netcfg"
 	"github.com/vhittuvalli/vpn/internal/protocol"
 	"github.com/vhittuvalli/vpn/internal/tun"
+	"github.com/vhittuvalli/vpn/internal/tunnel"
 	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
@@ -35,17 +30,33 @@ import (
 var version = "dev"
 
 const usage = `usage:
-  vpn version                     print the version
-  vpn genkey                      print a new private key
-  vpn pubkey < private.key        print the public key for a private key
-  sudo vpn server -c server.json  run the server
-  sudo vpn client -c client.json  connect to a server
-  sudo vpn reset                  undo kill switch and DNS after a crash
+  Run a server (Linux):
+    sudo vpn setup                  set up this machine as a server and print an access key
+    sudo vpn invite NAME            add a device and print its access key
+    sudo vpn revoke NAME            remove a device
+    sudo vpn devices                list devices
+
+  Connect:
+    sudo vpn connect ACCESS_KEY     connect until Ctrl-C (add --https to look like web traffic)
+    vpn app                         open the menu bar app (macOS)
+
+  Other:
+    vpn version                     print the version
+    sudo vpn reset                  undo kill switch and DNS after a crash
+    sudo vpn server -c server.json  run the server in the foreground
+    sudo vpn client -c client.json  connect with a hand-written config
+    vpn genkey, vpn pubkey          make keys for hand-written configs
 `
 
 func main() {
 	log.SetFlags(log.Ltime)
-	if len(os.Args) < 2 {
+	if len(os.Args) < 2 || strings.HasPrefix(os.Args[1], "-psn_") {
+		if inAppBundle() {
+			if err := runApp(); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
@@ -63,6 +74,20 @@ func main() {
 		err = runClient(os.Args[2:])
 	case "reset":
 		err = reset()
+	case "connect":
+		err = connect(os.Args[2:])
+	case "setup":
+		err = setup(os.Args[2:])
+	case "invite":
+		err = invite(os.Args[2:])
+	case "revoke":
+		err = revoke(os.Args[2:])
+	case "devices":
+		err = devices(os.Args[2:])
+	case "daemon":
+		err = runDaemon(os.Args[2:])
+	case "app":
+		err = runApp()
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -170,7 +195,26 @@ func runServer(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = vpn.NewServer(cfg, dev, transports...).Run(ctx)
+	srv := vpn.NewServer(cfg, dev, transports...)
+
+	// `vpn invite` and `vpn revoke` edit the config and send SIGHUP; only
+	// the device list is reloaded, without dropping anyone else.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for range hup {
+			next, err := config.LoadServer(path)
+			if err != nil {
+				log.Printf("reload: %v (keeping the current devices)", err)
+				continue
+			}
+			added, removed := srv.SetPeers(next.Peers)
+			log.Printf("reloaded devices: %d total, %d added, %d removed", len(next.Peers), added, removed)
+		}
+	}()
+
+	err = srv.Run(ctx)
 	log.Print("shutting down")
 	return err
 }
@@ -191,86 +235,51 @@ func runClient(args []string) error {
 	if err != nil {
 		return err
 	}
-	raddr, err := net.ResolveUDPAddr("udp4", cfg.Server)
-	if err != nil {
-		return fmt.Errorf("resolving server: %w", err)
-	}
-	server := raddr.AddrPort()
-	server = netip.AddrPortFrom(server.Addr().Unmap(), server.Port())
-
-	dev, err := tun.Create()
-	if err != nil {
-		return err
-	}
-	defer dev.Close()
-	if err := netcfg.ConfigureInterface(dev.Name(), cfg.Address, cfg.MTU); err != nil {
-		return err
-	}
-
-	// The kill switch goes up before anything is sent, so there is no
-	// moment where traffic could leak.
-	var cleanups []netcfg.Cleanup
-	var cleanupMu sync.Mutex
-	addCleanup := func(c netcfg.Cleanup) {
-		cleanupMu.Lock()
-		cleanups = append(cleanups, c)
-		cleanupMu.Unlock()
-	}
-	defer func() {
-		cleanupMu.Lock()
-		defer cleanupMu.Unlock()
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
-	}()
-	if cfg.KillSwitch {
-		undo, err := netcfg.KillSwitch(dev.Name(), server)
-		if err != nil {
-			return fmt.Errorf("kill switch: %w", err)
-		}
-		addCleanup(undo)
-		log.Print("kill switch on: traffic outside the VPN is blocked")
-	}
-
-	var conn vpn.ClientTransport
-	switch cfg.Transport {
-	case "https":
-		conn = vpn.NewHTTPSClient(server.String(), cfg.ServerName, cfg.ServerPublicKey)
-	default:
-		udp, err := net.DialUDP("udp4", nil, raddr)
-		if err != nil {
-			return err
-		}
-		conn = vpn.UDPClient{UDPConn: udp}
-	}
-	log.Printf("tunnel %s on %s, connecting to %s", cfg.Address, dev.Name(), conn)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	client := vpn.NewClient(cfg, dev, conn)
-	// Routes and DNS change only once the tunnel works, so a down server
-	// doesn't cut this machine off (unless the kill switch is on).
-	client.OnConnect = func() {
-		if cfg.RouteAllTraffic {
-			undo, err := netcfg.RouteAllTraffic(dev.Name(), server.Addr())
-			if err != nil {
-				log.Printf("routing all traffic: %v", err)
-				return
-			}
-			addCleanup(undo)
-			log.Print("all IPv4 traffic now goes through the VPN")
-		}
-		if len(cfg.DNS) > 0 {
-			undo, err := netcfg.SetDNS(dev.Name(), cfg.DNS)
-			if err != nil {
-				log.Printf("setting DNS: %v", err)
-				return
-			}
-			addCleanup(undo)
-			log.Printf("DNS now goes to %v through the VPN", cfg.DNS)
-		}
+	return tunnel.Run(ctx, cfg, nil)
+}
+
+func connect(args []string) error {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	https := fs.Bool("https", false, "tunnel over HTTPS (HTTP/3) on port 443 so it looks like web traffic")
+	noKill := fs.Bool("no-kill-switch", false, "let traffic bypass the VPN if the tunnel drops")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	err = client.Run(ctx)
-	log.Print("disconnected")
-	return err
+	if fs.NArg() != 1 {
+		return errors.New("usage: sudo vpn connect [--https] [--no-kill-switch] ACCESS_KEY")
+	}
+	if err := requireRoot(); err != nil {
+		return err
+	}
+	key, err := accesskey.Parse(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	cfg, err := key.Client(*https, !*noKill)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return tunnel.Run(ctx, cfg, func(s tunnel.State) {
+		if s == tunnel.Connected {
+			log.Print("connected; press Ctrl-C to disconnect")
+		}
+	})
+}
+
+func runDaemon(args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	owner := fs.Int("owner", 0, "user ID allowed to control the service, besides root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := requireRoot(); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return daemon.Run(ctx, version, *owner)
 }

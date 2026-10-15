@@ -16,9 +16,10 @@ WireGuard's, with three additions:
 - **Leak protection.** A firewall kill switch, IPv6 blocking, and DNS that goes
   through the tunnel.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
-```
+**[Download the Mac app](https://vhittuvalli.github.io/vpn/)**: a menu bar
+switch, set up by pasting an access key. Servers and Linux clients install
+with `curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh`
+(see [Setup](#setup)).
 
 > **This is a learning project.** No one has audited it. If you need real
 > privacy, use WireGuard.
@@ -137,40 +138,78 @@ clean up, `sudo vpn reset` restores your normal settings.
 
 ## Setup
 
-You need a Linux server with a public IP address, such as a small VPS, and a
-client, such as a Mac or Linux machine.
+### Run a server
 
-### 1. Install
-
-On both machines:
+On a fresh Linux server with a public IP address (a small VPS running Ubuntu
+22.04 or newer is plenty):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
+sudo vpn setup
 ```
 
-The script downloads the right binary from
-[Releases](https://github.com/vhittuvalli/vpn/releases), checks its SHA-256
-checksum, and installs it to `/usr/local/bin`. To build from source instead,
-run `go install github.com/vhittuvalli/vpn/cmd/vpn@latest`.
+`setup` creates the server's keys and `/etc/vpn/server.json`, installs a
+systemd service that starts on boot, opens UDP 51820 and 443 if `ufw` is
+active, and prints an access key for your first device. If your cloud
+provider has its own firewall, allow UDP 51820 and UDP 443 there too.
 
-### 2. Make keys
-
-On each machine:
+Manage who can connect:
 
 ```bash
-vpn genkey > private.key
-vpn pubkey < private.key      # share this public key with the other side
+sudo vpn invite alex-phone   # prints a new access key
+sudo vpn devices             # lists devices and their tunnel addresses
+sudo vpn revoke alex-phone   # that key stops working immediately
 ```
 
-### 3. Configure
+The running server picks up changes without dropping anyone else. An access
+key (`vpn://...`) contains that device's private key, so treat it like a
+password.
 
-Copy [server.example.json](server.example.json) to `server.json` on the
-server, and [client.example.json](client.example.json) to `client.json` on the
-client. Fill in each machine's own private key, plus the other machine's
-public key.
+### Connect from a Mac
+
+Download `VPN-<version>.dmg` from
+[Releases](https://github.com/vhittuvalli/vpn/releases) (or the
+[download page](https://vhittuvalli.github.io/vpn/)), drag VPN into
+Applications, and open it. The app isn't signed with an Apple Developer ID,
+so the first time macOS refuses to open it: go to System Settings → Privacy &
+Security and click **Open Anyway**. VPN then asks for your password once to
+install its background service, and for your access key.
+
+After that it lives in the menu bar: turn it on and off, block traffic if the
+tunnel drops (on by default), or switch to the HTTPS disguise. If it was on
+when you shut down, it reconnects after a restart.
+
+How it fits together: the menu bar app runs as you; a small root service
+(`/Library/PrivilegedHelperTools/com.vhittuvalli.vpn`, run by launchd) owns
+the tunnel and takes commands over `/var/run/vpn.sock`, only from root and the
+user who installed it. Its log is `/Library/Logs/vpn.log`. To uninstall:
+
+```bash
+sudo launchctl bootout system/com.vhittuvalli.vpn
+sudo rm -f /Library/LaunchDaemons/com.vhittuvalli.vpn.plist /Library/PrivilegedHelperTools/com.vhittuvalli.vpn
+sudo rm -rf "/Library/Application Support/vpn"
+rm -f ~/Library/LaunchAgents/com.vhittuvalli.vpn.app.plist
+```
+
+### Connect from Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
+sudo vpn connect vpn://...      # add --https to tunnel over port 443
+```
+
+Press Ctrl-C to disconnect. To check that it works, `curl -4 ifconfig.me`
+should print the server's IP address.
+
+### Advanced: hand-written configs
+
+`vpn server -c server.json` and `vpn client -c client.json` still work with
+configs you write yourself; see [server.example.json](server.example.json),
+[client.example.json](client.example.json) and `vpn genkey` / `vpn pubkey`.
 
 | setting | where | meaning |
 | --- | --- | --- |
+| `endpoint` | server | Public IP or hostname clients connect to. Goes into access keys. |
 | `nat_interface` | server | The internet-facing interface (see `ip route`). Lets clients reach the internet through the server. Private, link-local and CGNAT addresses (such as a cloud provider's internal network and metadata service) stay blocked. |
 | `https_port` | server | Also accept the HTTPS transport on this port. Usually 443. |
 | `server_name`, `tls_cert`, `tls_key` | server | The name in the self-signed certificate, or a real certificate if you have one. |
@@ -178,26 +217,6 @@ public key.
 | `route_all_traffic` | client | Send all IPv4 traffic through the VPN. |
 | `kill_switch` | client | Block anything that would bypass the VPN. Requires `route_all_traffic`. |
 | `dns` | client | Resolvers to use through the tunnel, e.g. `["1.1.1.1"]`. |
-
-Every client gets its own entry in `peers`, with a unique address. Files named
-`*.json` are gitignored, so configs with real keys won't be committed.
-
-### 4. Run
-
-```bash
-# server: open UDP 51820 (and UDP 443 for https) in the firewall
-sudo vpn server -c server.json
-
-# or as a service (the unit file is in packaging/vpn.service)
-sudo mkdir -p /etc/vpn && sudo cp server.json /etc/vpn/
-sudo cp packaging/vpn.service /etc/systemd/system/ && sudo systemctl enable --now vpn
-
-# client
-sudo vpn client -c client.json
-```
-
-To check that it works, run `ping 10.8.0.1`. Then `curl -4 ifconfig.me`
-should print the server's IP address.
 
 ## Tests
 
@@ -219,8 +238,9 @@ The tests run without root and cover:
 
 ## Releasing
 
-Pushing a version tag builds binaries for macOS and Linux (amd64 and arm64)
-and publishes a GitHub release:
+Pushing a version tag builds the Mac app (`VPN-<version>.dmg`, on a macOS
+runner) and command-line archives for macOS and Linux (amd64 and arm64), and
+publishes them as a GitHub release:
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
