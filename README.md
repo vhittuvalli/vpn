@@ -171,7 +171,7 @@ public key.
 
 | setting | where | meaning |
 | --- | --- | --- |
-| `nat_interface` | server | The internet-facing interface (see `ip route`). Lets clients reach the internet through the server. |
+| `nat_interface` | server | The internet-facing interface (see `ip route`). Lets clients reach the internet through the server. Private, link-local and CGNAT addresses (such as a cloud provider's internal network and metadata service) stay blocked. |
 | `https_port` | server | Also accept the HTTPS transport on this port. Usually 443. |
 | `server_name`, `tls_cert`, `tls_key` | server | The name in the self-signed certificate, or a real certificate if you have one. |
 | `transport` | client | `"udp"` (fast) or `"https"` (looks like web traffic; set `server` to port 443). |

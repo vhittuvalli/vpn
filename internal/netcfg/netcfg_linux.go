@@ -57,6 +57,14 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 		{"-t", "filter", "FORWARD", "-i", tunName, "-j", "ACCEPT"},
 		{"-t", "filter", "FORWARD", "-o", tunName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
 	}
+	// Clients get the internet, not the server's own networks: block private,
+	// carrier-grade NAT and link-local addresses, which on a cloud VM include
+	// the provider's private network and its metadata service (169.254.169.254).
+	// Traffic between clients (in and out of the tunnel) is still allowed.
+	// Rules are inserted at the top, so these land above the ACCEPT.
+	for _, blocked := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"} {
+		rules = append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "!", "-o", tunName, "-d", blocked, "-j", "DROP"})
+	}
 	var do, undo [][]string
 	for _, r := range rules {
 		table, chain, spec := r[:2], r[2], r[3:]
