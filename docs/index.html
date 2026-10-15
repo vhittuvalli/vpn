@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post-Quantum VPN</title>
+<meta name="description" content="A VPN written from scratch in Go, with post-quantum key exchange and signatures, an HTTPS disguise and a kill switch. Free for macOS and Linux.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z' fill='%23b9500d'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a spec-sheet page. Hero with a download button for the visitor's OS and the real initiation-packet layout drawn to scale, then numbered setup steps (a true sequence). */
+:root {
+  --bg: #eef1f4;
+  --surface: #ffffff;
+  --ink: #14202e;
+  --muted: #566475;
+  --line: #cdd5de;
+  --accent: #b9500d;
+  --accent-hover: #9c430a;
+  --accent-ink: #ffffff;
+  --code-bg: #182330;
+  --code-ink: #e3e9ef;
+  --code-muted: #8d9bab;
+  --code-line: #3a4858;
+  --seg1: #8e9aa8;
+  --seg2: #3b6fa8;
+  --seg3: #b9500d;
+  --seg4: #2f7d6a;
+  --seg5: #6b4fa0;
+  --warn-bg: #fbf0e6;
+  --warn-line: #e7c3a3;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f161e; --surface: #16202b; --ink: #e4eaf0; --muted: #95a3b2; --line: #2a3644;
+    --accent: #f08a3e; --accent-hover: #f6a466; --accent-ink: #1a0e04;
+    --code-bg: #0a1017; --code-ink: #e3e9ef; --code-muted: #7f8d9c; --code-line: #2f3b49;
+    --seg1: #6c7888; --seg2: #5b8fcb; --seg3: #f08a3e; --seg4: #4fa58f; --seg5: #9a80cc;
+    --warn-bg: #2a1d12; --warn-line: #5b3c22;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f161e; --surface: #16202b; --ink: #e4eaf0; --muted: #95a3b2; --line: #2a3644;
+  --accent: #f08a3e; --accent-hover: #f6a466; --accent-ink: #1a0e04;
+  --code-bg: #0a1017; --code-ink: #e3e9ef; --code-muted: #7f8d9c; --code-line: #2f3b49;
+  --seg1: #6c7888; --seg2: #5b8fcb; --seg3: #f08a3e; --seg4: #4fa58f; --seg5: #9a80cc;
+  --warn-bg: #2a1d12; --warn-line: #5b3c22;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 1rem; line-height: 1.6;
+}
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+.wrap { max-width: 60rem; margin: 0 auto; padding-inline: 1rem; padding-block: 2.5rem 4rem; display: grid; gap: 4rem; }
+a { color: var(--accent); text-underline-offset: 0.18em; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.1; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.4rem, 7vw, 4.2rem); font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.5rem, 3.5vw, 2rem); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: 1.15rem; font-weight: 500; }
+p { margin: 0; max-width: 65ch; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+code { font-family: var(--font-mono); font-size: 0.88em; }
+:not(pre) > code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0.05em 0.35em; }
+
+/* top bar */
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem; }
+.brand { font-family: var(--font-mono); font-weight: 600; font-size: 1.05rem; }
+.brand span { color: var(--accent); }
+.top nav { display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: 0.95rem; }
+.top nav a { color: var(--ink); text-decoration: none; }
+.top nav a:hover { color: var(--accent); }
+
+/* hero */
+.hero { display: grid; gap: 1.5rem; }
+.hero .lede { font-size: 1.2rem; color: var(--muted); }
+.hero .lede strong { color: var(--ink); }
+
+/* download */
+.download { display: grid; gap: 0.9rem; justify-items: start; }
+.dl-main {
+  display: inline-flex; align-items: center; gap: 0.8rem;
+  background: var(--accent); color: var(--accent-ink); text-decoration: none;
+  font: 700 1.15rem var(--font-body); padding: 0.95rem 1.6rem; border-radius: 10px;
+}
+.dl-main:hover { background: var(--accent-hover); }
+.dl-main svg { width: 1.25rem; height: 1.25rem; flex: none; }
+.dl-main small { font-weight: 400; font-size: 0.85rem; opacity: 0.85; }
+.dl-sub { font-size: 0.9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.75rem; width: 100%; }
+.platform {
+  display: grid; gap: 0.15rem; padding: 0.8rem 1rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0;
+}
+.platform:hover { border-color: var(--accent); }
+.platform b { font-size: 0.95rem; }
+.platform span { font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.platform.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* code blocks */
+.cmd { position: relative; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; min-width: 0; }
+.cmd pre { margin: 0; padding: 1rem 5.5rem 1rem 1.1rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.86rem; line-height: 1.65; }
+.cmd .c { color: var(--code-muted); }
+.copy {
+  position: absolute; top: 0.6rem; right: 0.6rem;
+  font: 600 0.75rem var(--font-mono); letter-spacing: 0.04em;
+  background: transparent; color: var(--code-ink); border: 1px solid var(--code-line); border-radius: 5px;
+  padding: 0.35rem 0.6rem; cursor: pointer;
+}
+.copy:hover { border-color: var(--code-ink); }
+.copy.done { color: var(--seg4); border-color: var(--seg4); }
+
+/* packet diagram */
+.packet { display: grid; gap: 0.6rem; margin: 0; }
+.bar { display: flex; height: 2.4rem; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.bar div { min-width: 3px; }
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+.legend i { width: 0.7rem; height: 0.7rem; border-radius: 2px; display: inline-block; }
+.legend b { color: var(--ink); font-weight: 700; font-family: var(--font-mono); font-size: 0.78rem; }
+
+/* features */
+.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.5rem 2rem; }
+.features > div { display: grid; gap: 0.4rem; align-content: start; border-top: 2px solid var(--ink); padding-top: 0.9rem; }
+.features p { color: var(--muted); font-size: 0.95rem; }
+.warn { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 1rem 1.2rem; display: grid; gap: 0.3rem; }
+.warn p { max-width: none; }
+
+/* steps */
+section { display: grid; gap: 1.5rem; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2.5rem; counter-reset: step; }
+.steps > li { display: grid; grid-template-columns: 2.6rem minmax(0, 1fr); gap: 0 1rem; counter-increment: step; }
+.steps > li::before {
+  content: counter(step); font-family: var(--font-display); font-weight: 700; font-size: 1.2rem;
+  width: 2.2rem; height: 2.2rem; border-radius: 50%; display: grid; place-items: center;
+  border: 2px solid var(--ink); grid-row: span 2;
+}
+.steps .body { display: grid; gap: 0.8rem; min-width: 0; padding-top: 0.6rem; }
+.steps .where { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); margin-left: 0.5rem; vertical-align: middle; }
+.hint { font-size: 0.85rem; color: var(--muted); }
+
+/* tabs */
+.tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--line); }
+.tabs button {
+  font: 600 0.9rem var(--font-body); background: none; border: 0; color: var(--muted);
+  padding: 0.55rem 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.panel { display: grid; gap: 0.8rem; padding-top: 0.9rem; }
+
+/* builder */
+.builder { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1.25rem; display: grid; gap: 1.25rem; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; }
+.field { display: grid; gap: 0.3rem; min-width: 0; align-content: start; }
+.field.wide { grid-column: 1 / -1; }
+label { font-size: 0.85rem; font-weight: 700; }
+.field .hint { font-size: 0.8rem; }
+input, select {
+  font: 0.9rem var(--font-mono); color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.65rem; width: 100%; min-width: 0;
+}
+input[aria-invalid="true"] { border-color: var(--accent); }
+.err { font-size: 0.8rem; color: var(--accent); min-height: 1.1em; }
+.outs { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.outs > div { display: grid; gap: 0.4rem; min-width: 0; align-content: start; }
+.private { font-size: 0.85rem; color: var(--muted); display: flex; gap: 0.5rem; align-items: baseline; }
+.private::before { content: ""; flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--seg4); transform: translateY(-0.05rem); }
+
+footer { border-top: 1px solid var(--line); padding-top: 1.25rem; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.75rem; font-size: 0.88rem; color: var(--muted); }
+
+@media (max-width: 30rem) {
+  .steps > li { grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+  .steps > li::before { grid-row: auto; }
+  .steps .body { padding-top: 0; }
+  .cmd pre { padding-right: 1.1rem; padding-top: 2.6rem; }
+  .dl-main { width: 100%; justify-content: center; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .copy, .tabs button, .top nav a, .dl-main, .platform { transition: color 0.15s, border-color 0.15s, background-color 0.15s; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">vpn<span>/</span><span id="brand-version">v0.1.1</span></div>
+    <nav aria-label="Sections">
+      <a href="#setup">Setup</a>
+      <a href="https://github.com/vhittuvalli/vpn/releases">Releases</a>
+      <a href="https://github.com/vhittuvalli/vpn">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <span class="eyebrow">Free and open source · macOS and Linux</span>
+    <h1>A VPN that stays private after quantum computers arrive.</h1>
+    <p class="lede">Built like WireGuard, with <strong>ML-KEM-768</strong> key exchange and <strong>ML-DSA-44</strong> signatures layered on X25519, an optional <strong>HTTPS disguise</strong> on port 443, and a <strong>kill switch</strong> that blocks leaks.</p>
+
+    <div class="download">
+      <a class="dl-main" id="dl-main" href="https://github.com/vhittuvalli/vpn/releases/latest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+        <span id="dl-main-label">Download</span>
+      </a>
+      <span class="dl-sub" id="dl-sub">Pick your system below.</span>
+      <div class="platforms" id="platforms" aria-label="All downloads"></div>
+      <span class="dl-sub">Every download has a SHA-256 in <a id="dl-checksums" href="https://github.com/vhittuvalli/vpn/releases/latest">checksums.txt</a>.</span>
+    </div>
+
+    <figure class="packet">
+      <span class="eyebrow">The first handshake message, drawn to scale · 5,064 bytes</span>
+      <div class="bar" role="img" aria-label="Initiation message: 8 bytes header, 32 bytes X25519 key, 1184 bytes ML-KEM key, 1360 bytes encrypted identity, 2448 bytes encrypted signature, 32 bytes MACs">
+        <div style="flex:8;background:var(--seg1)"></div>
+        <div style="flex:32;background:var(--seg2)"></div>
+        <div style="flex:1184;background:var(--seg3)"></div>
+        <div style="flex:1360;background:var(--seg4)"></div>
+        <div style="flex:2448;background:var(--seg5)"></div>
+        <div style="flex:32;background:var(--seg1)"></div>
+      </div>
+      <figcaption class="legend">
+        <span><i style="background:var(--seg2)"></i>X25519 key <b>32</b></span>
+        <span><i style="background:var(--seg3)"></i>ML-KEM-768 key <b>1,184</b></span>
+        <span><i style="background:var(--seg4)"></i>Encrypted identity <b>1,360</b></span>
+        <span><i style="background:var(--seg5)"></i>Timestamp + ML-DSA signature <b>2,448</b></span>
+        <span><i style="background:var(--seg1)"></i>Header and MACs <b>40</b></span>
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="features">
+    <div>
+      <h3>Post-quantum end to end</h3>
+      <p>Traffic recorded today stays unreadable unless an attacker breaks both X25519 and ML-KEM. Both sides sign the handshake, so breaking X25519 alone can't impersonate anyone.</p>
+    </div>
+    <div>
+      <h3>Looks like web browsing</h3>
+      <p>Switch to the HTTPS transport and the tunnel runs inside HTTP/3, using the same MASQUE framing as iCloud Private Relay. A browser visiting the server sees an ordinary page.</p>
+    </div>
+    <div>
+      <h3>No leaks when it drops</h3>
+      <p>The kill switch blocks every route except the tunnel, IPv6 is blocked outright, and DNS goes through the VPN to resolvers you pick.</p>
+    </div>
+  </div>
+
+  <div class="warn" role="note">
+    <strong>This is a learning project.</strong>
+    <p>No one has audited it. Use it to learn how a modern VPN works or for your own experiments. If you need privacy you can rely on, use WireGuard.</p>
+  </div>
+
+  <section id="setup" aria-labelledby="setup-h">
+    <div style="display:grid;gap:0.5rem">
+      <span class="eyebrow">About 10 minutes</span>
+      <h2 id="setup-h">Set up your own server</h2>
+      <p>You need a Linux server with a public IP address, such as a small VPS, and the Mac or Linux computer you downloaded to. <code>vpn</code> is a command-line app, so the rest happens in Terminal.</p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Install what you downloaded<span class="where">your computer</span></h3>
+        <div class="body">
+          <div class="tabs" role="tablist" aria-label="Your system">
+            <button role="tab" id="t-mac" aria-selected="true" aria-controls="p-mac">macOS</button>
+            <button role="tab" id="t-linux" aria-selected="false" aria-controls="p-linux">Linux</button>
+          </div>
+          <div class="panel" role="tabpanel" id="p-mac" aria-labelledby="t-mac">
+            <div class="cmd"><pre><code id="c-mac">cd ~/Downloads
+tar -xzf vpn_*_darwin_*.tar.gz
+xattr -dr com.apple.quarantine vpn_*_darwin_*/
+sudo install -m 755 vpn_*_darwin_*/vpn /usr/local/bin/
+vpn version</code></pre><button class="copy" type="button" data-copy="c-mac">Copy</button></div>
+            <p class="hint">The app isn't signed by Apple, so macOS quarantines it when it comes from a browser. The <code>xattr</code> line lifts that for this one download. If Safari already unpacked the file into a folder, skip the <code>tar</code> line.</p>
+          </div>
+          <div class="panel" role="tabpanel" id="p-linux" aria-labelledby="t-linux" hidden>
+            <div class="cmd"><pre><code id="c-linux">cd ~/Downloads
+tar -xzf vpn_*_linux_*.tar.gz
+sudo install -m 755 vpn_*_linux_*/vpn /usr/local/bin/
+vpn version</code></pre><button class="copy" type="button" data-copy="c-linux">Copy</button></div>
+          </div>
+        </div>
+      </li>
+
+      <li>
+        <h3>Install on the server<span class="where">server</span></h3>
+        <div class="body">
+          <p>Connect to the server with <code>ssh</code>, then download the Linux build there.</p>
+          <div class="cmd"><pre><code id="c-srv-install"></code></pre><button class="copy" type="button" data-copy="c-srv-install">Copy</button></div>
+          <p class="hint">Most servers are x86-64. On an ARM server (<code>uname -m</code> prints <code>aarch64</code>), use the ARM64 build instead.</p>
+        </div>
+      </li>
+
+      <li>
+        <h3>Make a key pair on each machine</h3>
+        <div class="body">
+          <div class="cmd"><pre><code id="c-keys">umask 077
+vpn genkey > private.key
+vpn pubkey < private.key   <span class="c"># share this one with the other machine</span></code></pre><button class="copy" type="button" data-copy="c-keys">Copy</button></div>
+          <p>The private key never leaves the machine it was made on. Only the 88-character public key gets copied across.</p>
+        </div>
+      </li>
+
+      <li>
+        <h3>Write the config files</h3>
+        <div class="body">
+          <p>Fill in the public details and copy the two commands. Run each one in the folder that holds that machine's <code>private.key</code>; the command reads the key from the file.</p>
+          <form class="builder" id="builder" novalidate>
+            <div class="fields">
+              <div class="field">
+                <label for="f-ip">Server public IP</label>
+                <input id="f-ip" value="203.0.113.10" autocomplete="off" spellcheck="false">
+                <span class="err" id="e-ip"></span>
+              </div>
+              <div class="field">
+                <label for="f-transport">Transport</label>
+                <select id="f-transport">
+                  <option value="udp">UDP on 51820 (fastest)</option>
+                  <option value="https">HTTPS on 443 (looks like web traffic)</option>
+                </select>
+                <span class="hint">The server listens on both either way.</span>
+              </div>
+              <div class="field">
+                <label for="f-nat">Server's internet interface</label>
+                <input id="f-nat" value="eth0" autocomplete="off" spellcheck="false">
+                <span class="hint">Shown after <code>dev</code> in <code>ip route | grep default</code></span>
+              </div>
+              <div class="field">
+                <label for="f-name">Client name</label>
+                <input id="f-name" value="laptop" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field wide">
+                <label for="f-spub">Server public key</label>
+                <input id="f-spub" placeholder="output of vpn pubkey on the server" autocomplete="off" spellcheck="false">
+                <span class="err" id="e-spub"></span>
+              </div>
+              <div class="field wide">
+                <label for="f-cpub">Client public key</label>
+                <input id="f-cpub" placeholder="output of vpn pubkey on your computer" autocomplete="off" spellcheck="false">
+                <span class="err" id="e-cpub"></span>
+              </div>
+            </div>
+            <p class="private">Only public keys go in here. Nothing you type on this page is sent anywhere.</p>
+            <div class="outs">
+              <div>
+                <span class="eyebrow">On the server</span>
+                <div class="cmd"><pre><code id="o-server"></code></pre><button class="copy" type="button" data-copy="o-server">Copy</button></div>
+              </div>
+              <div>
+                <span class="eyebrow">On your computer</span>
+                <div class="cmd"><pre><code id="o-client"></code></pre><button class="copy" type="button" data-copy="o-client">Copy</button></div>
+              </div>
+            </div>
+          </form>
+        </div>
+      </li>
+
+      <li>
+        <h3>Start the server<span class="where">server</span></h3>
+        <div class="body">
+          <div class="cmd"><pre><code id="c-server"><span class="c"># open the VPN ports, keeping SSH reachable</span>
+sudo ufw allow 22/tcp && sudo ufw allow 51820/udp && sudo ufw allow 443/udp
+sudo ufw --force enable
+
+<span class="c"># run as a service that starts on boot</span>
+sudo mkdir -p /etc/vpn && sudo install -m 600 server.json /etc/vpn/
+sudo install -m 644 vpn_*_linux_*/vpn.service /etc/systemd/system/
+sudo systemctl enable --now vpn
+journalctl -u vpn -n 5</code></pre><button class="copy" type="button" data-copy="c-server">Copy</button></div>
+          <p class="hint">The log should end with <code>listening on UDP 51820</code> and <code>1 peer(s)</code>. If your cloud provider has its own firewall, allow the same ports there too.</p>
+        </div>
+      </li>
+
+      <li>
+        <h3>Connect<span class="where">your computer</span></h3>
+        <div class="body">
+          <div class="cmd"><pre><code id="c-client">sudo vpn client -c client.json
+
+<span class="c"># in another terminal</span>
+ping -c 3 10.8.0.1
+curl -4 ifconfig.me   <span class="c"># prints your server's IP</span></code></pre><button class="copy" type="button" data-copy="c-client">Copy</button></div>
+          <p>Press Ctrl-C to disconnect. Quit any other VPN first (Cloudflare WARP, a work VPN), since two VPNs fight over your routes. If the client ever exits without cleaning up, <code>sudo vpn reset</code> restores your normal network settings.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <footer>
+    <span>MIT licensed · by Varun Hittuvalli</span>
+    <span><a href="https://github.com/vhittuvalli/vpn">Source</a> · <a href="https://github.com/vhittuvalli/vpn/releases">Releases</a> · <a href="https://github.com/vhittuvalli/vpn/issues">Report a problem</a></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var REPO = "vhittuvalli/vpn";
+  var FALLBACK_VERSION = "v0.1.1";
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- Downloads ----------------------------------------------------------
+  var TARGETS = [
+    { os: "darwin", arch: "arm64", name: "macOS", cpu: "Apple silicon (M1 and later)" },
+    { os: "darwin", arch: "amd64", name: "macOS", cpu: "Intel" },
+    { os: "linux",  arch: "amd64", name: "Linux", cpu: "x86-64" },
+    { os: "linux",  arch: "arm64", name: "Linux", cpu: "ARM64" }
+  ];
+
+  function detect() {
+    var ua = navigator.userAgent || "";
+    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    if (/Mac/i.test(plat) || /Macintosh/.test(ua)) return { os: "darwin", arch: "arm64" };
+    if (/Linux/i.test(plat) && !/Android/i.test(ua)) return { os: "linux", arch: /aarch64|arm/i.test(ua) ? "arm64" : "amd64" };
+    return null;
+  }
+
+  function fileName(version, t) { return "vpn_" + version.replace(/^v/, "") + "_" + t.os + "_" + t.arch + ".tar.gz"; }
+  function fileUrl(version, name) { return "https://github.com/" + REPO + "/releases/download/" + version + "/" + name; }
+  function mb(bytes) { return (bytes / 1048576).toFixed(1) + " MB"; }
+
+  var current = detect();
+
+  function renderDownloads(version, sizes) {
+    $("brand-version").textContent = version;
+    $("dl-checksums").href = fileUrl(version, "checksums.txt");
+
+    var box = $("platforms");
+    box.textContent = "";
+    TARGETS.forEach(function (t) {
+      var name = fileName(version, t);
+      var a = document.createElement("a");
+      a.className = "platform";
+      a.href = fileUrl(version, name);
+      var isCurrent = current && current.os === t.os && current.arch === t.arch;
+      if (isCurrent) a.classList.add("current");
+      var b = document.createElement("b");
+      b.textContent = t.name + " · " + t.cpu;
+      var s = document.createElement("span");
+      s.textContent = version + (sizes[name] ? " · " + mb(sizes[name]) : "") + (isCurrent ? " · your system" : "");
+      a.appendChild(b); a.appendChild(s);
+      box.appendChild(a);
+    });
+
+    if (current) {
+      var t = TARGETS.filter(function (x) { return x.os === current.os && x.arch === current.arch; })[0];
+      var name = fileName(version, t);
+      $("dl-main").href = fileUrl(version, name);
+      $("dl-main-label").innerHTML = "";
+      $("dl-main-label").appendChild(document.createTextNode("Download for " + t.name + " "));
+      var small = document.createElement("small");
+      small.textContent = sizes[name] ? mb(sizes[name]) : version;
+      $("dl-main-label").appendChild(small);
+      $("dl-sub").textContent = current.os === "darwin"
+        ? version + " for Apple silicon Macs. Using an Intel Mac? Pick it below."
+        : version + " for " + t.cpu + ". Other builds are below.";
+    } else {
+      $("dl-main-label").textContent = "See all downloads";
+      $("dl-sub").textContent = "vpn runs on macOS and Linux. Pick your system below.";
+    }
+
+    $("c-srv-install").textContent =
+      "curl -fsSLO " + fileUrl(version, fileName(version, TARGETS[2])) + "\n" +
+      "tar -xzf " + fileName(version, TARGETS[2]) + "\n" +
+      "sudo install -m 755 vpn_*_linux_*/vpn /usr/local/bin/\n" +
+      "vpn version";
+  }
+
+  renderDownloads(FALLBACK_VERSION, {});
+
+  if (window.fetch) {
+    fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (rel) {
+        var sizes = {};
+        (rel.assets || []).forEach(function (a) { sizes[a.name] = a.size; });
+        if (rel.tag_name) renderDownloads(rel.tag_name, sizes);
+      })
+      .catch(function () { /* keep the fallback links */ });
+  }
+
+  // ---- Copy buttons -------------------------------------------------------
+  document.querySelectorAll(".copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var el = $(btn.dataset.copy);
+      function done() {
+        btn.textContent = "Copied"; btn.classList.add("done");
+        setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1600);
+      }
+      function fallback() {
+        var r = document.createRange(); r.selectNodeContents(el);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        btn.textContent = "Press ⌘C";
+        setTimeout(function () { btn.textContent = "Copy"; }, 2000);
+      }
+      try { navigator.clipboard.writeText(el.textContent).then(done, fallback); } catch (e) { fallback(); }
+    });
+  });
+
+  // ---- Tabs (open the visitor's own system first) -------------------------
+  var tabs = document.querySelectorAll('[role="tab"]');
+  function select(tab) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      $(t.getAttribute("aria-controls")).hidden = !on;
+    });
+  }
+  tabs.forEach(function (tab) { tab.addEventListener("click", function () { select(tab); }); });
+  if (current && current.os === "linux") select($("t-linux"));
+
+  // ---- Config builder (private keys are filled in by the shell) -----------
+  var keyRe = /^[A-Za-z0-9+/]{86}==$/;
+  var ipRe = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+  function check(input, errEl, ok, msg) {
+    var v = input.value.trim();
+    var bad = v !== "" && !ok(v);
+    input.setAttribute("aria-invalid", bad ? "true" : "false");
+    errEl.textContent = bad ? msg : "";
+    return bad ? "" : v;
+  }
+
+  function render() {
+    var keyMsg = "A public key is 88 characters and ends in ==";
+    var ip = check($("f-ip"), $("e-ip"), function (v) { return ipRe.test(v); }, "Enter an IPv4 address, like 203.0.113.10");
+    var spub = check($("f-spub"), $("e-spub"), function (v) { return keyRe.test(v); }, keyMsg);
+    var cpub = check($("f-cpub"), $("e-cpub"), function (v) { return keyRe.test(v); }, keyMsg);
+    var nat = /^[A-Za-z0-9._-]{1,15}$/.test($("f-nat").value.trim()) ? $("f-nat").value.trim() : "eth0";
+    var name = /^[A-Za-z0-9._-]{1,32}$/.test($("f-name").value.trim()) ? $("f-name").value.trim() : "laptop";
+    var https = $("f-transport").value === "https";
+
+    $("o-server").textContent = [
+      "cat > server.json <<EOF",
+      "{",
+      '  "private_key": "$(cat private.key)",',
+      '  "listen_port": 51820,',
+      '  "https_port": 443,',
+      '  "server_name": "www.example.com",',
+      '  "address": "10.8.0.1/24",',
+      '  "nat_interface": "' + nat + '",',
+      '  "peers": [',
+      '    { "name": "' + name + '", "public_key": "' + (cpub || "PASTE_CLIENT_PUBLIC_KEY") + '", "address": "10.8.0.2" }',
+      "  ]",
+      "}",
+      "EOF",
+      "chmod 600 server.json"
+    ].join("\n");
+
+    $("o-client").textContent = [
+      "cat > client.json <<EOF",
+      "{",
+      '  "private_key": "$(cat private.key)",',
+      '  "address": "10.8.0.2/24",',
+      '  "server": "' + (ip || "203.0.113.10") + (https ? ":443" : ":51820") + '",',
+      '  "server_public_key": "' + (spub || "PASTE_SERVER_PUBLIC_KEY") + '",',
+      '  "transport": "' + (https ? "https" : "udp") + '",'
+    ].concat(https ? ['  "server_name": "www.example.com",'] : []).concat([
+      '  "route_all_traffic": true,',
+      '  "kill_switch": true,',
+      '  "dns": ["1.1.1.1", "9.9.9.9"]',
+      "}",
+      "EOF",
+      "chmod 600 client.json"
+    ]).join("\n");
+  }
+
+  $("builder").addEventListener("input", render);
+  $("builder").addEventListener("submit", function (e) { e.preventDefault(); });
+  render();
+})();
+</script>
+</body>
+</html>
