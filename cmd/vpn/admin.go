@@ -315,14 +315,28 @@ func defaultInterface() (string, netip.Addr, error) {
 	if err != nil {
 		return "", netip.Addr{}, fmt.Errorf("reading %s's address: %w", iface, err)
 	}
-	// e.g. "2: eth0    inet 203.0.113.10/20 brd ... scope global eth0"
+	// e.g. "2: eth0    inet 203.0.113.10/20 brd ... scope global eth0", one
+	// line per address. Cloud VMs often add a private address to the same
+	// interface, so prefer a public one.
+	var first netip.Addr
 	fields = strings.Fields(string(out))
 	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "inet" {
-			if p, err := netip.ParsePrefix(fields[i+1]); err == nil {
-				return iface, p.Addr(), nil
-			}
+		if fields[i] != "inet" {
+			continue
 		}
+		p, err := netip.ParsePrefix(fields[i+1])
+		if err != nil {
+			continue
+		}
+		if !p.Addr().IsPrivate() && !p.Addr().IsLoopback() {
+			return iface, p.Addr(), nil
+		}
+		if !first.IsValid() {
+			first = p.Addr()
+		}
+	}
+	if first.IsValid() {
+		return iface, first, nil
 	}
 	return "", netip.Addr{}, fmt.Errorf("%s has no IPv4 address", iface)
 }
