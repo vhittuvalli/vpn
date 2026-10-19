@@ -52,21 +52,21 @@ const (
 )
 
 type Status struct {
-	Version    string `json:"version"`
-	State      string `json:"state"`
-	Error      string `json:"error,omitempty"` // why the last command or connection failed
-	HasKey     bool   `json:"has_key"`
-	Name       string `json:"name,omitempty"`   // this device's name on the server
-	Server     string `json:"server,omitempty"` // server host
+	Version string `json:"version"`
+	State   string `json:"state"`
+	Error   string `json:"error,omitempty"` // why the last command or connection failed
+	HasKey  bool   `json:"has_key"`
+	Name    string `json:"name,omitempty"`   // this device's name on the server
+	Server  string `json:"server,omitempty"` // server host
 
 	// While connected: since when, traffic so far and the latest round trip.
 	ConnectedSince int64  `json:"connected_since,omitempty"` // unix seconds
 	RxBytes        uint64 `json:"rx_bytes,omitempty"`
 	TxBytes        uint64 `json:"tx_bytes,omitempty"`
 	RTTMillis      int64  `json:"rtt_ms,omitempty"`
-	KillSwitch bool   `json:"kill_switch"`
-	HTTPS      bool   `json:"https"`
-	AllowLAN   bool   `json:"allow_lan"`
+	KillSwitch     bool   `json:"kill_switch"`
+	HTTPS          bool   `json:"https"`
+	AllowLAN       bool   `json:"allow_lan"`
 }
 
 // settings survive restarts, so the VPN comes back after a reboot if it
