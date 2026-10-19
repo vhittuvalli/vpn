@@ -16,15 +16,11 @@ import (
 const pfAnchor = "com.apple/250.vpn-killswitch"
 
 // KillSwitch blocks all outgoing traffic except through the tunnel and to
-// the VPN server itself, so nothing leaks if the tunnel drops. It also
-// blocks all IPv6, which the tunnel doesn't carry.
-func KillSwitch(tunName string, server netip.AddrPort) (Cleanup, error) {
-	rules := fmt.Sprintf(`pass out quick on lo0 all
-pass out quick on %s all
-pass out quick inet proto udp from any to %s port %d
-pass out quick inet proto udp from any port 68 to any port 67
-block drop out quick all
-`, tunName, server.Addr(), server.Port())
+// the VPN server itself (any protocol, so SSH to it still works), so nothing
+// leaks if the tunnel drops. It also blocks all IPv6, which the tunnel
+// doesn't carry. With allowLAN, the local network stays reachable too.
+func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
+	rules := pfRules(tunName, server, allowLAN)
 
 	// Make sure the main ruleset references the com.apple anchors.
 	if out, _ := run("pfctl", "-s", "rules"); !strings.Contains(out, `anchor "com.apple/*"`) {
@@ -54,6 +50,20 @@ block drop out quick all
 			run("pfctl", "-X", token)
 		}
 	}, nil
+}
+
+func pfRules(tunName string, server netip.Addr, allowLAN bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "pass out quick on lo0 all\n")
+	fmt.Fprintf(&b, "pass out quick on %s all\n", tunName)
+	fmt.Fprintf(&b, "pass out quick inet from any to %s\n", server)
+	fmt.Fprintf(&b, "pass out quick inet proto udp from any port 68 to any port 67\n")
+	if allowLAN {
+		fmt.Fprintf(&b, "pass out quick inet from any to { %s }\n", strings.Join(LocalNetworks4, ", "))
+		fmt.Fprintf(&b, "pass out quick inet6 from any to { %s }\n", strings.Join(LocalNetworks6, ", "))
+	}
+	fmt.Fprintf(&b, "block drop out quick all\n")
+	return b.String()
 }
 
 // DNS: macOS resolvers are set per network service (Wi-Fi, Ethernet, ...).

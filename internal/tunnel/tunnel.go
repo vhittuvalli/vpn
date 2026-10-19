@@ -65,7 +65,7 @@ func Run(ctx context.Context, cfg *config.Client, onState func(State)) error {
 		}
 	}()
 	if cfg.KillSwitch {
-		undo, err := netcfg.KillSwitch(dev.Name(), server)
+		undo, err := netcfg.KillSwitch(dev.Name(), server.Addr(), cfg.AllowLAN)
 		if err != nil {
 			return fmt.Errorf("kill switch: %w", err)
 		}
