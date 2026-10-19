@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vhittuvalli/vpn/internal/config"
@@ -37,6 +38,7 @@ type Server struct {
 	peersMu    sync.RWMutex
 	peersByKey map[protocol.PublicKey]*serverPeer
 	peersByIP  map[netip.Addr]*serverPeer
+	carried    map[protocol.PublicKey]PeerStats // totals from earlier runs (LoadStatus)
 
 	loadMu       sync.Mutex
 	loadWindow   time.Time
@@ -54,6 +56,24 @@ type serverPeer struct {
 	current       *protocol.Session
 	previous      *protocol.Session // kept briefly so in-flight packets survive a rekey
 	lastTimestamp protocol.Timestamp
+	lastSeen      time.Time // last authenticated packet
+	connectedAt   time.Time // start of the current stretch of activity
+	lastFrom      string    // endpoint of the latest connection, kept after it ends
+	carried       PeerStats // totals from earlier runs
+
+	rxBytes, txBytes atomic.Uint64 // IP traffic from and to the peer, this run
+}
+
+// onlineWindow is how recently a peer must have sent something to count as
+// online. Idle clients send a keepalive every 15 seconds.
+const onlineWindow = time.Minute
+
+// seen records authenticated traffic from the peer. p.mu must be held.
+func (p *serverPeer) seen(now time.Time, ep Endpoint) {
+	if now.Sub(p.lastSeen) > onlineWindow {
+		p.connectedAt = now
+	}
+	p.lastSeen, p.lastFrom = now, ep.String()
 }
 
 type serverSession struct {
@@ -86,7 +106,7 @@ func (s *Server) SetPeers(peers []config.Peer) (added, removed int) {
 	for _, p := range peers {
 		sp := s.peersByKey[p.PublicKey]
 		if sp == nil || sp.ip != p.Address || sp.name != p.Name {
-			sp = &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address}
+			sp = &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address, carried: s.carried[p.PublicKey]}
 			added++
 		}
 		byKey[p.PublicKey], byIP[p.Address] = sp, sp
@@ -239,6 +259,7 @@ func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
 	p.previous, p.current = p.current, sess
 	fresh := p.endpoint != ep
 	p.endpoint = ep
+	p.seen(time.Now(), ep)
 	p.mu.Unlock()
 	if stale != nil {
 		s.dropIndex(stale.LocalIndex)
@@ -306,6 +327,7 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 		log.Printf("peer %s moved to %s", p.name, ep)
 		p.endpoint = ep
 	}
+	p.seen(time.Now(), ep)
 	p.mu.Unlock()
 	if len(packet) == 0 {
 		return // keepalive
@@ -315,6 +337,7 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 	if src, ok := ipv4Src(packet); !ok || src != p.ip {
 		return
 	}
+	p.rxBytes.Add(uint64(len(packet)))
 	if _, err := s.dev.Write(packet); err != nil {
 		log.Printf("writing to %s: %v", s.dev.Name(), err)
 	}
@@ -345,6 +368,7 @@ func (s *Server) tunLoop() error {
 		if err != nil {
 			continue
 		}
+		p.txBytes.Add(uint64(n))
 		ep.Send(out)
 	}
 }
