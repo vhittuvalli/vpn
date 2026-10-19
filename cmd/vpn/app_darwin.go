@@ -22,6 +22,7 @@ import (
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/daemon"
+	"github.com/vhittuvalli/vpn/internal/human"
 )
 
 // The menu bar app runs as the user. The tunnel itself runs in a root
@@ -62,7 +63,7 @@ type app struct {
 	busy    bool // a command is in flight
 	setupOK bool
 
-	mStatus, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
+	mStatus, mDetails, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
 }
 
 func (a *app) ready() {
@@ -71,6 +72,9 @@ func (a *app) ready() {
 
 	a.mStatus = systray.AddMenuItem("Starting…", "")
 	a.mStatus.Disable()
+	a.mDetails = systray.AddMenuItem("", "Time connected · downloaded / uploaded · round trip to the server")
+	a.mDetails.Disable()
+	a.mDetails.Hide()
 	a.mToggle = systray.AddMenuItem("Turn On", "")
 	systray.AddSeparator()
 	a.mKill = systray.AddMenuItemCheckbox("Block internet if the VPN drops", "Nothing leaves this Mac outside the VPN while it's on", true)
@@ -160,6 +164,13 @@ func (a *app) show(s *daemon.Status) {
 		a.setStatusText("VPN is off · " + where)
 	}
 
+	if d := details(s); d != "" && !busy {
+		a.mDetails.SetTitle(d)
+		a.mDetails.Show()
+	} else {
+		a.mDetails.Hide()
+	}
+
 	on := s.State != daemon.StateOff
 	if on {
 		a.mToggle.SetTitle("Turn Off")
@@ -180,6 +191,20 @@ func (a *app) show(s *daemon.Status) {
 	} else {
 		a.mKey.SetTitle("Add Access Key…")
 	}
+}
+
+// details is the second menu line while connected, e.g.
+// "2h 14m · ↓ 1.3 GB  ↑ 80.0 MB · 42 ms".
+func details(s *daemon.Status) string {
+	if s.State != daemon.StateOn || s.ConnectedSince == 0 {
+		return ""
+	}
+	d := human.Duration(time.Since(time.Unix(s.ConnectedSince, 0))) +
+		" · ↓ " + human.Bytes(s.RxBytes) + "  ↑ " + human.Bytes(s.TxBytes)
+	if s.RTTMillis > 0 {
+		d += fmt.Sprintf(" · %d ms", s.RTTMillis)
+	}
+	return d
 }
 
 func (a *app) clicks() {
