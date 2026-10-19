@@ -13,8 +13,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/config"
@@ -197,6 +199,28 @@ func runServer(args []string) error {
 	defer stop()
 	srv := vpn.NewServer(cfg, dev, transports...)
 
+	// Per-device usage goes to status.json next to the config, for
+	// `vpn devices`; totals carry over from the last run.
+	status := statusPath(path)
+	if err := srv.LoadStatus(status); err != nil {
+		log.Printf("reading %s: %v (starting usage from zero)", status, err)
+	}
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := srv.WriteStatus(status); err != nil {
+					log.Printf("writing %s: %v", status, err)
+				}
+			}
+		}
+	}()
+	defer srv.WriteStatus(status)
+
 	// `vpn invite` and `vpn revoke` edit the config and send SIGHUP; only
 	// the device list is reloaded, without dropping anyone else.
 	hup := make(chan os.Signal, 1)
@@ -217,6 +241,10 @@ func runServer(args []string) error {
 	err = srv.Run(ctx)
 	log.Print("shutting down")
 	return err
+}
+
+func statusPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "status.json")
 }
 
 func loadCert(cfg *config.Server) (tls.Certificate, error) {

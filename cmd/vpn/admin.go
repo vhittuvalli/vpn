@@ -5,16 +5,21 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/config"
+	"github.com/vhittuvalli/vpn/internal/human"
 	"github.com/vhittuvalli/vpn/internal/protocol"
+	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
 // Where `vpn setup` puts things. The other admin commands default to the
@@ -269,8 +274,45 @@ func devices(args []string) error {
 		fmt.Println("No devices yet. Add one with: sudo vpn invite NAME")
 		return nil
 	}
+
+	// The running server refreshes status.json every few seconds. If it's
+	// missing or old, the server isn't running: show the last known numbers
+	// with everyone offline.
+	now := time.Now()
+	byKey := map[string]vpn.PeerStats{}
+	status, err := vpn.ReadStatus(statusPath(*path))
+	stale := err != nil || now.Sub(status.Updated) > 30*time.Second
+	if err == nil {
+		for _, st := range status.Peers {
+			byKey[st.PublicKey] = st
+		}
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "DEVICE\tADDRESS\tSTATUS\tLAST SEEN\tFROM\tDOWNLOADED\tUPLOADED")
 	for _, p := range f.Peers {
-		fmt.Printf("%-32s %s\n", p.Name, p.Address)
+		st, known := byKey[p.PublicKey]
+		state, seen, from, down, up := "offline", "never", "-", "-", "-"
+		if known {
+			if st.Online && !stale {
+				state = "online " + human.Duration(now.Sub(st.ConnectedAt))
+				seen = "now"
+			} else {
+				seen = human.Ago(st.LastSeen, now)
+			}
+			if host, _, err := net.SplitHostPort(st.From); err == nil {
+				from = host
+			}
+			down, up = human.Bytes(st.TxBytes), human.Bytes(st.RxBytes)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, state, seen, from, down, up)
+	}
+	w.Flush()
+	switch {
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		fmt.Fprintf(os.Stderr, "\ncouldn't read usage: %v\n", err)
+	case stale:
+		fmt.Println("\nThe vpn server doesn't seem to be running; showing the last known usage.")
 	}
 	return nil
 }
