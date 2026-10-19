@@ -4,12 +4,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +39,9 @@ const (
 	pollInterval  = 1500 * time.Millisecond
 	dialogTitle   = "VPN"
 	keyPromptText = "Paste the access key from your server. It starts with vpn://"
+	latestRelease = "https://api.github.com/repos/vhittuvalli/vpn/releases/latest"
+	downloadPage  = "https://vhittuvalli.github.io/vpn/"
+	updateEvery   = 12 * time.Hour
 )
 
 func inAppBundle() bool {
@@ -63,7 +68,7 @@ type app struct {
 	busy    bool // a command is in flight
 	setupOK bool
 
-	mStatus, mDetails, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
+	mStatus, mDetails, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mUpdate, mQuit *systray.MenuItem
 }
 
 func (a *app) ready() {
@@ -83,10 +88,52 @@ func (a *app) ready() {
 	a.mKey = systray.AddMenuItem("Add Access Key…", "")
 	a.mLogin = systray.AddMenuItemCheckbox("Open at Login", "", loginItemEnabled())
 	systray.AddSeparator()
+	a.mUpdate = systray.AddMenuItem("Update Available", "Opens the download page")
+	a.mUpdate.Hide()
 	a.mQuit = systray.AddMenuItem("Quit VPN", "Turns the VPN off and quits")
 
 	go a.clicks()
 	go a.start()
+	go a.checkForUpdates()
+}
+
+// checkForUpdates asks GitHub for the latest release shortly after launch
+// and twice a day, and shows a menu item when it's newer than this app.
+func (a *app) checkForUpdates() {
+	time.Sleep(10 * time.Second)
+	for {
+		if tag, err := latestVersion(); err != nil {
+			log.Printf("checking for updates: %v", err)
+		} else if newerVersion(tag, version) {
+			a.mUpdate.SetTitle("Update Available: " + tag + "…")
+			a.mUpdate.Show()
+		}
+		time.Sleep(updateEvery)
+	}
+}
+
+func latestVersion() (string, error) {
+	req, err := http.NewRequest("GET", latestRelease, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "vpn-app/"+version)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub answered %s", resp.Status)
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return "", err
+	}
+	return rel.TagName, nil
 }
 
 // start makes sure the root service is installed and current, then keeps
@@ -236,6 +283,8 @@ func (a *app) clicks() {
 				alert("Couldn't change Open at Login.", err.Error())
 			}
 			setChecked(a.mLogin, loginItemEnabled())
+		case <-a.mUpdate.ClickedCh:
+			exec.Command("open", downloadPage).Run()
 		case <-a.mQuit.ClickedCh:
 			a.mStatus.SetTitle("Turning off…")
 			daemon.Call(daemon.Request{Cmd: daemon.CmdOff})
