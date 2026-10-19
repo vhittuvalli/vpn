@@ -62,7 +62,7 @@ type app struct {
 	busy    bool // a command is in flight
 	setupOK bool
 
-	mStatus, mToggle, mKill, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
+	mStatus, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
 }
 
 func (a *app) ready() {
@@ -74,6 +74,7 @@ func (a *app) ready() {
 	a.mToggle = systray.AddMenuItem("Turn On", "")
 	systray.AddSeparator()
 	a.mKill = systray.AddMenuItemCheckbox("Block internet if the VPN drops", "Nothing leaves this Mac outside the VPN while it's on", true)
+	a.mLAN = systray.AddMenuItemCheckbox("Allow local network", "Printers, AirDrop, Chromecast and your router stay reachable while connected", true)
 	a.mHTTPS = systray.AddMenuItemCheckbox("Disguise as web traffic", "Tunnel over HTTPS on port 443, for networks that block VPNs", false)
 	a.mKey = systray.AddMenuItem("Add Access Key…", "")
 	a.mLogin = systray.AddMenuItemCheckbox("Open at Login", "", loginItemEnabled())
@@ -173,6 +174,7 @@ func (a *app) show(s *daemon.Status) {
 	systray.SetTemplateIcon(shieldIcon(s.State == daemon.StateOn), shieldIcon(s.State == daemon.StateOn))
 	setChecked(a.mKill, s.KillSwitch)
 	setChecked(a.mHTTPS, s.HTTPS)
+	setChecked(a.mLAN, s.AllowLAN)
 	if s.HasKey {
 		a.mKey.SetTitle("Change Access Key…")
 	} else {
@@ -195,6 +197,9 @@ func (a *app) clicks() {
 		case <-a.mKill.ClickedCh:
 			v := !a.mKill.Checked()
 			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, KillSwitch: &v})
+		case <-a.mLAN.ClickedCh:
+			v := !a.mLAN.Checked()
+			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, AllowLAN: &v})
 		case <-a.mHTTPS.ClickedCh:
 			v := !a.mHTTPS.Checked()
 			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, HTTPS: &v})

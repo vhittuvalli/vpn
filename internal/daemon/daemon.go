@@ -40,6 +40,7 @@ type Request struct {
 	Key        string `json:"key,omitempty"`         // CmdSetKey
 	KillSwitch *bool  `json:"kill_switch,omitempty"` // CmdSettings
 	HTTPS      *bool  `json:"https,omitempty"`       // CmdSettings
+	AllowLAN   *bool  `json:"allow_lan,omitempty"`   // CmdSettings
 }
 
 // Connection states.
@@ -58,6 +59,7 @@ type Status struct {
 	Server     string `json:"server,omitempty"` // server host
 	KillSwitch bool   `json:"kill_switch"`
 	HTTPS      bool   `json:"https"`
+	AllowLAN   bool   `json:"allow_lan"`
 }
 
 // settings survive restarts, so the VPN comes back after a reboot if it
@@ -66,6 +68,7 @@ type settings struct {
 	On         bool `json:"on"`
 	KillSwitch bool `json:"kill_switch"`
 	HTTPS      bool `json:"https"`
+	AllowLAN   bool `json:"allow_lan"`
 }
 
 type Daemon struct {
@@ -90,7 +93,7 @@ type Daemon struct {
 // Run serves commands until ctx is canceled, then disconnects.
 func Run(ctx context.Context, version string, owner int) error {
 	d := &Daemon{version: version, owner: owner, dir: stateDir, state: StateOff,
-		settings: settings{KillSwitch: true}}
+		settings: settings{KillSwitch: true, AllowLAN: true}}
 	if err := os.MkdirAll(d.dir, 0o700); err != nil {
 		return err
 	}
@@ -196,6 +199,9 @@ func (d *Daemon) handle(req Request) Status {
 		if req.HTTPS != nil {
 			d.settings.HTTPS = *req.HTTPS
 		}
+		if req.AllowLAN != nil {
+			d.settings.AllowLAN = *req.AllowLAN
+		}
 		d.save()
 		if d.settings.On {
 			d.stopLocked()
@@ -210,7 +216,7 @@ func (d *Daemon) handle(req Request) Status {
 func (d *Daemon) statusLocked() Status {
 	s := Status{
 		Version: d.version, State: d.state, Error: d.lastErr, HasKey: d.key != nil,
-		KillSwitch: d.settings.KillSwitch, HTTPS: d.settings.HTTPS,
+		KillSwitch: d.settings.KillSwitch, HTTPS: d.settings.HTTPS, AllowLAN: d.settings.AllowLAN,
 	}
 	if d.key != nil {
 		s.Name, s.Server = d.key.Name, d.key.Host
@@ -221,7 +227,7 @@ func (d *Daemon) statusLocked() Status {
 // startLocked connects in the background, retrying if the tunnel fails
 // until the VPN is turned off. d.mu must be held.
 func (d *Daemon) startLocked() {
-	cfg, err := d.key.Client(d.settings.HTTPS, d.settings.KillSwitch)
+	cfg, err := d.key.Client(d.settings.HTTPS, d.settings.KillSwitch, d.settings.AllowLAN)
 	if err != nil {
 		d.lastErr = err.Error()
 		return

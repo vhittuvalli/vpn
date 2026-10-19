@@ -43,14 +43,14 @@ func TestRoundTrip(t *testing.T) {
 
 func TestClient(t *testing.T) {
 	k := testKey(t)
-	udp, err := k.Client(false, true)
+	udp, err := k.Client(false, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if udp.Server != "203.0.113.10:51820" || udp.Transport != "udp" || !udp.KillSwitch || !udp.RouteAllTraffic {
+	if udp.Server != "203.0.113.10:51820" || udp.Transport != "udp" || !udp.KillSwitch || !udp.AllowLAN || !udp.RouteAllTraffic {
 		t.Fatalf("udp config: %+v", udp)
 	}
-	https, err := k.Client(true, false)
+	https, err := k.Client(true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestClient(t *testing.T) {
 		t.Fatalf("https config: %+v", https)
 	}
 	k.HTTPSPort = 0
-	if _, err := k.Client(true, false); err == nil {
+	if _, err := k.Client(true, false, false); err == nil {
 		t.Fatal("expected an error for https without an HTTPS port")
 	}
 }

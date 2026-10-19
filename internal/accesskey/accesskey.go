@@ -92,14 +92,16 @@ func Parse(s string) (*Key, error) {
 
 // Client builds a client config from the key. With https, the tunnel runs
 // over HTTP/3 on the server's HTTPS port; otherwise over UDP. Both send all
-// traffic and DNS through the VPN.
-func (k *Key) Client(https, killSwitch bool) (*config.Client, error) {
+// traffic and DNS through the VPN. allowLAN keeps the local network
+// reachable through the kill switch.
+func (k *Key) Client(https, killSwitch, allowLAN bool) (*config.Client, error) {
 	c := &config.Client{
 		PrivateKey:      k.PrivateKey,
 		Address:         k.Address,
 		ServerPublicKey: k.ServerPublicKey,
 		RouteAllTraffic: true,
 		KillSwitch:      killSwitch,
+		AllowLAN:        allowLAN,
 		DNS:             []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("9.9.9.9")},
 	}
 	switch {

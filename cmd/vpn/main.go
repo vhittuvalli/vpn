@@ -244,11 +244,12 @@ func connect(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	https := fs.Bool("https", false, "tunnel over HTTPS (HTTP/3) on port 443 so it looks like web traffic")
 	noKill := fs.Bool("no-kill-switch", false, "let traffic bypass the VPN if the tunnel drops")
+	blockLAN := fs.Bool("block-lan", false, "also block the local network (printers, file shares) while connected")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sudo vpn connect [--https] [--no-kill-switch] ACCESS_KEY")
+		return errors.New("usage: sudo vpn connect [--https] [--no-kill-switch] [--block-lan] ACCESS_KEY")
 	}
 	if err := requireRoot(); err != nil {
 		return err
@@ -257,7 +258,7 @@ func connect(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := key.Client(*https, !*noKill)
+	cfg, err := key.Client(*https, !*noKill, !*blockLAN)
 	if err != nil {
 		return err
 	}
