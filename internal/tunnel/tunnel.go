@@ -27,10 +27,11 @@ const (
 
 // Run connects to the server in cfg and keeps the tunnel up until ctx is
 // canceled. It undoes every change it made to the system before returning.
-// onState, if set, is called as the connection progresses.
-func Run(ctx context.Context, cfg *config.Client, onState func(State)) error {
+// onState, if set, is called as the connection progresses, with the client
+// so callers can read its Stats.
+func Run(ctx context.Context, cfg *config.Client, onState func(State, *vpn.Client)) error {
 	if onState == nil {
-		onState = func(State) {}
+		onState = func(State, *vpn.Client) {}
 	}
 	raddr, err := net.ResolveUDPAddr("udp4", cfg.Server)
 	if err != nil {
@@ -85,13 +86,13 @@ func Run(ctx context.Context, cfg *config.Client, onState func(State)) error {
 		conn = vpn.UDPClient{UDPConn: udp}
 	}
 	log.Printf("tunnel %s on %s, connecting to %s", cfg.Address, dev.Name(), conn)
-	onState(Connecting)
-
 	client := vpn.NewClient(cfg, dev, conn)
+	onState(Connecting, client)
+
 	// Routes and DNS change only once the tunnel works, so a down server
 	// doesn't cut this machine off (unless the kill switch is on).
 	client.OnConnect = func() {
-		defer onState(Connected)
+		defer onState(Connected, client)
 		if cfg.RouteAllTraffic {
 			undo, err := netcfg.RouteAllTraffic(dev.Name(), server.Addr())
 			if err != nil {

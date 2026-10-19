@@ -264,7 +264,7 @@ func connect(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return tunnel.Run(ctx, cfg, func(s tunnel.State) {
+	return tunnel.Run(ctx, cfg, func(s tunnel.State, _ *vpn.Client) {
 		if s == tunnel.Connected {
 			log.Print("connected; press Ctrl-C to disconnect")
 		}

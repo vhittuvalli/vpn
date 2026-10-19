@@ -22,6 +22,7 @@ import (
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/netcfg"
 	"github.com/vhittuvalli/vpn/internal/tunnel"
+	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
 const SocketPath = "/var/run/vpn.sock"
@@ -57,6 +58,12 @@ type Status struct {
 	HasKey     bool   `json:"has_key"`
 	Name       string `json:"name,omitempty"`   // this device's name on the server
 	Server     string `json:"server,omitempty"` // server host
+
+	// While connected: since when, traffic so far and the latest round trip.
+	ConnectedSince int64  `json:"connected_since,omitempty"` // unix seconds
+	RxBytes        uint64 `json:"rx_bytes,omitempty"`
+	TxBytes        uint64 `json:"tx_bytes,omitempty"`
+	RTTMillis      int64  `json:"rtt_ms,omitempty"`
 	KillSwitch bool   `json:"kill_switch"`
 	HTTPS      bool   `json:"https"`
 	AllowLAN   bool   `json:"allow_lan"`
@@ -86,6 +93,7 @@ type Daemon struct {
 	settings settings
 	state    string
 	lastErr  string
+	client   *vpn.Client // the current connection, for statistics
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
@@ -221,6 +229,13 @@ func (d *Daemon) statusLocked() Status {
 	if d.key != nil {
 		s.Name, s.Server = d.key.Name, d.key.Host
 	}
+	if d.state == StateOn && d.client != nil {
+		st := d.client.Stats()
+		if !st.ConnectedAt.IsZero() {
+			s.ConnectedSince = st.ConnectedAt.Unix()
+		}
+		s.RxBytes, s.TxBytes, s.RTTMillis = st.RxBytes, st.TxBytes, st.RTT.Milliseconds()
+	}
 	return s
 }
 
@@ -238,12 +253,13 @@ func (d *Daemon) startLocked() {
 	go func() {
 		defer close(done)
 		for ctx.Err() == nil {
-			err := tunnel.Run(ctx, cfg, func(s tunnel.State) {
+			err := tunnel.Run(ctx, cfg, func(s tunnel.State, c *vpn.Client) {
 				d.mu.Lock()
 				defer d.mu.Unlock()
 				if ctx.Err() != nil {
 					return
 				}
+				d.client = c
 				if s == tunnel.Connected {
 					d.state, d.lastErr = StateOn, ""
 				} else {
@@ -280,7 +296,7 @@ func (d *Daemon) stopLocked() {
 	d.mu.Unlock()
 	<-done
 	d.mu.Lock()
-	d.state = StateOff
+	d.state, d.client = StateOff, nil
 }
 
 func (d *Daemon) load() {
