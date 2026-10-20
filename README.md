@@ -157,7 +157,7 @@ Manage who can connect:
 
 ```bash
 sudo vpn invite alex-phone   # prints a new access key
-sudo vpn devices             # lists devices and their tunnel addresses
+sudo vpn devices             # who's online, last seen, data used per device
 sudo vpn revoke alex-phone   # that key stops working immediately
 ```
 
@@ -175,9 +175,12 @@ so the first time macOS refuses to open it: go to System Settings → Privacy &
 Security and click **Open Anyway**. VPN then asks for your password once to
 install its background service, and for your access key.
 
-After that it lives in the menu bar: turn it on and off, block traffic if the
-tunnel drops (on by default), or switch to the HTTPS disguise. If it was on
-when you shut down, it reconnects after a restart.
+After that it lives in the menu bar: turn it on and off, see how long you've
+been connected, how much data has gone each way and the round trip to the
+server, block traffic if the tunnel drops (on by default), keep the local
+network reachable for printers and AirDrop (on by default), or switch to the
+HTTPS disguise. If it was on when you shut down, it reconnects after a
+restart. The menu shows "Update Available" when a newer release is out.
 
 How it fits together: the menu bar app runs as you; a small root service
 (`/Library/PrivilegedHelperTools/com.vhittuvalli.vpn`, run by launchd) owns
@@ -195,7 +198,7 @@ rm -f ~/Library/LaunchAgents/com.vhittuvalli.vpn.app.plist
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
-sudo vpn connect vpn://...      # add --https to tunnel over port 443
+sudo vpn connect vpn://...      # add --https to tunnel over port 443, --block-lan to cut off the local network
 ```
 
 Press Ctrl-C to disconnect. To check that it works, `curl -4 ifconfig.me`
