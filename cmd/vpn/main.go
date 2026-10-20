@@ -13,8 +13,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/config"
@@ -197,6 +199,28 @@ func runServer(args []string) error {
 	defer stop()
 	srv := vpn.NewServer(cfg, dev, transports...)
 
+	// Per-device usage goes to status.json next to the config, for
+	// `vpn devices`; totals carry over from the last run.
+	status := statusPath(path)
+	if err := srv.LoadStatus(status); err != nil {
+		log.Printf("reading %s: %v (starting usage from zero)", status, err)
+	}
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := srv.WriteStatus(status); err != nil {
+					log.Printf("writing %s: %v", status, err)
+				}
+			}
+		}
+	}()
+	defer srv.WriteStatus(status)
+
 	// `vpn invite` and `vpn revoke` edit the config and send SIGHUP; only
 	// the device list is reloaded, without dropping anyone else.
 	hup := make(chan os.Signal, 1)
@@ -217,6 +241,10 @@ func runServer(args []string) error {
 	err = srv.Run(ctx)
 	log.Print("shutting down")
 	return err
+}
+
+func statusPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "status.json")
 }
 
 func loadCert(cfg *config.Server) (tls.Certificate, error) {
@@ -244,11 +272,12 @@ func connect(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	https := fs.Bool("https", false, "tunnel over HTTPS (HTTP/3) on port 443 so it looks like web traffic")
 	noKill := fs.Bool("no-kill-switch", false, "let traffic bypass the VPN if the tunnel drops")
+	blockLAN := fs.Bool("block-lan", false, "also block the local network (printers, file shares) while connected")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sudo vpn connect [--https] [--no-kill-switch] ACCESS_KEY")
+		return errors.New("usage: sudo vpn connect [--https] [--no-kill-switch] [--block-lan] ACCESS_KEY")
 	}
 	if err := requireRoot(); err != nil {
 		return err
@@ -257,13 +286,13 @@ func connect(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := key.Client(*https, !*noKill)
+	cfg, err := key.Client(*https, !*noKill, !*blockLAN)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return tunnel.Run(ctx, cfg, func(s tunnel.State) {
+	return tunnel.Run(ctx, cfg, func(s tunnel.State, _ *vpn.Client) {
 		if s == tunnel.Connected {
 			log.Print("connected; press Ctrl-C to disconnect")
 		}

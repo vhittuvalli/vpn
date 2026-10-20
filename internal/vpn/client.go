@@ -28,6 +28,13 @@ type Client struct {
 	previous    *protocol.Session
 	established chan struct{}
 	lastSent    atomic.Int64 // unix nanos
+	pendingSent time.Time    // when the pending initiation was sent, for RTT
+
+	// Statistics, read with Stats.
+	connectedAt atomic.Int64 // unix nanos of the first handshake
+	rtt         atomic.Int64 // nanos, from the latest handshake
+	rxBytes     atomic.Uint64
+	txBytes     atomic.Uint64
 
 	// OnConnect, if set, is called once after the first handshake succeeds.
 	OnConnect func()
@@ -42,6 +49,22 @@ func NewClient(cfg *config.Client, dev tun.Device, conn ClientTransport) *Client
 		fragments:   protocol.NewReassembler[struct{}](),
 		established: make(chan struct{}, 1),
 	}
+}
+
+// ClientStats describes a connection so far.
+type ClientStats struct {
+	ConnectedAt time.Time     // zero until the first handshake
+	RTT         time.Duration // round trip of the latest handshake
+	RxBytes     uint64        // IP traffic received through the tunnel
+	TxBytes     uint64        // IP traffic sent through the tunnel
+}
+
+func (c *Client) Stats() ClientStats {
+	s := ClientStats{RTT: time.Duration(c.rtt.Load()), RxBytes: c.rxBytes.Load(), TxBytes: c.txBytes.Load()}
+	if t := c.connectedAt.Load(); t != 0 {
+		s.ConnectedAt = time.Unix(0, t)
+	}
+	return s
 }
 
 // Run keeps the tunnel up until ctx is canceled or the device or transport fails.
@@ -115,6 +138,7 @@ func (c *Client) sendInitiation(hs *protocol.InitiatorHandshake) {
 	}
 	protocol.AddMACs(hs.Message, c.serverKey, cookie)
 	msg := bytes.Clone(hs.Message)
+	c.pendingSent = time.Now()
 	c.mu.Unlock()
 	for _, frag := range protocol.Fragment(msg) {
 		c.send(frag)
@@ -190,6 +214,10 @@ func (c *Client) handleResponse(msg []byte) {
 	}
 	c.pending = nil
 	c.previous, c.current = c.current, sess
+	// The handshake's round trip includes a little crypto, but is close
+	// enough to a ping and comes for free every RekeyAfterTime.
+	c.rtt.Store(int64(time.Since(c.pendingSent)))
+	c.connectedAt.CompareAndSwap(0, time.Now().UnixNano())
 	c.mu.Unlock()
 
 	select {
@@ -241,6 +269,7 @@ func (c *Client) handleData(msg []byte) {
 	if err != nil || len(packet) == 0 {
 		return
 	}
+	c.rxBytes.Add(uint64(len(packet)))
 	if _, err := c.dev.Write(packet); err != nil {
 		log.Printf("writing to %s: %v", c.dev.Name(), err)
 	}
@@ -266,6 +295,7 @@ func (c *Client) tunLoop() error {
 		if err != nil {
 			continue
 		}
+		c.txBytes.Add(uint64(n))
 		c.send(out)
 	}
 }

@@ -4,12 +4,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/daemon"
+	"github.com/vhittuvalli/vpn/internal/human"
 )
 
 // The menu bar app runs as the user. The tunnel itself runs in a root
@@ -36,6 +39,9 @@ const (
 	pollInterval  = 1500 * time.Millisecond
 	dialogTitle   = "VPN"
 	keyPromptText = "Paste the access key from your server. It starts with vpn://"
+	latestRelease = "https://api.github.com/repos/vhittuvalli/vpn/releases/latest"
+	downloadPage  = "https://vhittuvalli.github.io/vpn/"
+	updateEvery   = 12 * time.Hour
 )
 
 func inAppBundle() bool {
@@ -62,7 +68,7 @@ type app struct {
 	busy    bool // a command is in flight
 	setupOK bool
 
-	mStatus, mToggle, mKill, mHTTPS, mKey, mLogin, mQuit *systray.MenuItem
+	mStatus, mDetails, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mUpdate, mQuit *systray.MenuItem
 }
 
 func (a *app) ready() {
@@ -71,17 +77,63 @@ func (a *app) ready() {
 
 	a.mStatus = systray.AddMenuItem("Starting…", "")
 	a.mStatus.Disable()
+	a.mDetails = systray.AddMenuItem("", "Time connected · downloaded / uploaded · round trip to the server")
+	a.mDetails.Disable()
+	a.mDetails.Hide()
 	a.mToggle = systray.AddMenuItem("Turn On", "")
 	systray.AddSeparator()
 	a.mKill = systray.AddMenuItemCheckbox("Block internet if the VPN drops", "Nothing leaves this Mac outside the VPN while it's on", true)
+	a.mLAN = systray.AddMenuItemCheckbox("Allow local network", "Printers, AirDrop, Chromecast and your router stay reachable while connected", true)
 	a.mHTTPS = systray.AddMenuItemCheckbox("Disguise as web traffic", "Tunnel over HTTPS on port 443, for networks that block VPNs", false)
 	a.mKey = systray.AddMenuItem("Add Access Key…", "")
 	a.mLogin = systray.AddMenuItemCheckbox("Open at Login", "", loginItemEnabled())
 	systray.AddSeparator()
+	a.mUpdate = systray.AddMenuItem("Update Available", "Opens the download page")
+	a.mUpdate.Hide()
 	a.mQuit = systray.AddMenuItem("Quit VPN", "Turns the VPN off and quits")
 
 	go a.clicks()
 	go a.start()
+	go a.checkForUpdates()
+}
+
+// checkForUpdates asks GitHub for the latest release shortly after launch
+// and twice a day, and shows a menu item when it's newer than this app.
+func (a *app) checkForUpdates() {
+	time.Sleep(10 * time.Second)
+	for {
+		if tag, err := latestVersion(); err != nil {
+			log.Printf("checking for updates: %v", err)
+		} else if newerVersion(tag, version) {
+			a.mUpdate.SetTitle("Update Available: " + tag + "…")
+			a.mUpdate.Show()
+		}
+		time.Sleep(updateEvery)
+	}
+}
+
+func latestVersion() (string, error) {
+	req, err := http.NewRequest("GET", latestRelease, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "vpn-app/"+version)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub answered %s", resp.Status)
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return "", err
+	}
+	return rel.TagName, nil
 }
 
 // start makes sure the root service is installed and current, then keeps
@@ -159,6 +211,13 @@ func (a *app) show(s *daemon.Status) {
 		a.setStatusText("VPN is off · " + where)
 	}
 
+	if d := details(s); d != "" && !busy {
+		a.mDetails.SetTitle(d)
+		a.mDetails.Show()
+	} else {
+		a.mDetails.Hide()
+	}
+
 	on := s.State != daemon.StateOff
 	if on {
 		a.mToggle.SetTitle("Turn Off")
@@ -173,11 +232,26 @@ func (a *app) show(s *daemon.Status) {
 	systray.SetTemplateIcon(shieldIcon(s.State == daemon.StateOn), shieldIcon(s.State == daemon.StateOn))
 	setChecked(a.mKill, s.KillSwitch)
 	setChecked(a.mHTTPS, s.HTTPS)
+	setChecked(a.mLAN, s.AllowLAN)
 	if s.HasKey {
 		a.mKey.SetTitle("Change Access Key…")
 	} else {
 		a.mKey.SetTitle("Add Access Key…")
 	}
+}
+
+// details is the second menu line while connected, e.g.
+// "2h 14m · ↓ 1.3 GB  ↑ 80.0 MB · 42 ms".
+func details(s *daemon.Status) string {
+	if s.State != daemon.StateOn || s.ConnectedSince == 0 {
+		return ""
+	}
+	d := human.Duration(time.Since(time.Unix(s.ConnectedSince, 0))) +
+		" · ↓ " + human.Bytes(s.RxBytes) + "  ↑ " + human.Bytes(s.TxBytes)
+	if s.RTTMillis > 0 {
+		d += fmt.Sprintf(" · %d ms", s.RTTMillis)
+	}
+	return d
 }
 
 func (a *app) clicks() {
@@ -195,6 +269,9 @@ func (a *app) clicks() {
 		case <-a.mKill.ClickedCh:
 			v := !a.mKill.Checked()
 			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, KillSwitch: &v})
+		case <-a.mLAN.ClickedCh:
+			v := !a.mLAN.Checked()
+			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, AllowLAN: &v})
 		case <-a.mHTTPS.ClickedCh:
 			v := !a.mHTTPS.Checked()
 			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, HTTPS: &v})
@@ -206,6 +283,8 @@ func (a *app) clicks() {
 				alert("Couldn't change Open at Login.", err.Error())
 			}
 			setChecked(a.mLogin, loginItemEnabled())
+		case <-a.mUpdate.ClickedCh:
+			exec.Command("open", downloadPage).Run()
 		case <-a.mQuit.ClickedCh:
 			a.mStatus.SetTitle("Turning off…")
 			daemon.Call(daemon.Request{Cmd: daemon.CmdOff})

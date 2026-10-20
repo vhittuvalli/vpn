@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +188,14 @@ func TestEndToEnd(t *testing.T) {
 			tn.client.fromOS <- big
 			tn.server.expect(t, big)
 
+			st := tn.clientVPN.Stats()
+			if st.ConnectedAt.IsZero() || st.RTT <= 0 {
+				t.Errorf("stats missing connection time or RTT: %+v", st)
+			}
+			if st.TxBytes != uint64(len(up)+len(big)) || st.RxBytes != uint64(len(down)) {
+				t.Errorf("stats: sent %d, received %d; want %d, %d", st.TxBytes, st.RxBytes, len(up)+len(big), len(down))
+			}
+
 			// A client claiming another tunnel address is dropped by the server.
 			tn.client.fromOS <- ipv4Packet("10.8.0.99", "10.8.0.1", "spoofed")
 			tn.server.expectNothing(t)
@@ -246,6 +255,49 @@ func TestPeerChangesWhileRunning(t *testing.T) {
 	tn.server.expectNothing(t)
 	tn.server.fromOS <- ipv4Packet("10.8.0.1", "10.8.0.2", "revoked")
 	tn.client.expectNothing(t)
+}
+
+func TestServerStats(t *testing.T) {
+	tn := start(t, "udp", DefaultLoadThreshold)
+	up := ipv4Packet("10.8.0.2", "10.8.0.1", "upload")
+	tn.client.fromOS <- up
+	tn.server.expect(t, up)
+	down := ipv4Packet("10.8.0.1", "10.8.0.2", "download, a bit longer")
+	tn.server.fromOS <- down
+	tn.client.expect(t, down)
+
+	stats := tn.serverVPN.PeerStats(time.Now())
+	if len(stats) != 1 {
+		t.Fatalf("got %d peers", len(stats))
+	}
+	st := stats[0]
+	if !st.Online || st.ConnectedAt.IsZero() || st.From == "" {
+		t.Errorf("laptop should be online with a connection time and address: %+v", st)
+	}
+	if st.RxBytes != uint64(len(up)) || st.TxBytes != uint64(len(down)) {
+		t.Errorf("bytes from/to laptop = %d/%d, want %d/%d", st.RxBytes, st.TxBytes, len(up), len(down))
+	}
+	if later := tn.serverVPN.PeerStats(time.Now().Add(2 * onlineWindow))[0]; later.Online {
+		t.Error("laptop still online after going quiet")
+	}
+
+	// Totals survive a restart through the status file.
+	path := filepath.Join(t.TempDir(), "status.json")
+	if err := tn.serverVPN.WriteStatus(path); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewServer(&config.Server{
+		PrivateKey: tn.serverKey,
+		Address:    netip.MustParsePrefix("10.8.0.1/24"),
+		Peers:      []config.Peer{{Name: "laptop", PublicKey: tn.clientKey.Public(), Address: netip.MustParseAddr("10.8.0.2")}},
+	}, newFakeTun())
+	if err := restarted.LoadStatus(path); err != nil {
+		t.Fatal(err)
+	}
+	got := restarted.PeerStats(time.Now())[0]
+	if got.Online || got.RxBytes != st.RxBytes || got.TxBytes != st.TxBytes || !got.LastSeen.Equal(st.LastSeen) {
+		t.Errorf("after restart: %+v, want offline with %d/%d bytes, last seen %v", got, st.RxBytes, st.TxBytes, st.LastSeen)
+	}
 }
 
 func TestUnknownClientRejected(t *testing.T) {

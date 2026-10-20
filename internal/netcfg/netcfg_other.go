@@ -19,7 +19,9 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 	return nil, errUnsupported
 }
 
-func KillSwitch(tunName string, server netip.AddrPort) (Cleanup, error) { return nil, errUnsupported }
+func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
+	return nil, errUnsupported
+}
 
 func SetDNS(tunName string, servers []netip.Addr) (Cleanup, error) { return nil, errUnsupported }
 

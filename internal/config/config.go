@@ -49,6 +49,7 @@ type Client struct {
 	MTU             int
 	RouteAllTraffic bool
 	KillSwitch      bool
+	AllowLAN        bool // with the kill switch, still allow the local network
 	DNS             []netip.Addr
 }
 
@@ -107,6 +108,7 @@ type clientFile struct {
 	MTU             int      `json:"mtu"`
 	RouteAllTraffic bool     `json:"route_all_traffic"`
 	KillSwitch      bool     `json:"kill_switch"`
+	AllowLAN        bool     `json:"allow_lan,omitempty"`
 	DNS             []string `json:"dns"`
 }
 
@@ -189,7 +191,7 @@ func LoadClient(path string) (*Client, error) {
 	var errs []error
 	c := &Client{
 		Server: f.Server, Transport: f.Transport, ServerName: f.ServerName, MTU: f.MTU,
-		RouteAllTraffic: f.RouteAllTraffic, KillSwitch: f.KillSwitch,
+		RouteAllTraffic: f.RouteAllTraffic, KillSwitch: f.KillSwitch, AllowLAN: f.AllowLAN,
 	}
 	switch c.Transport {
 	case "", "udp":

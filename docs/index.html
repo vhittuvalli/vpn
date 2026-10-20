@@ -225,9 +225,11 @@ footer { border-top: 1px solid var(--line); padding-top: 1.25rem; display: flex;
       </div>
       <div class="menu" aria-hidden="true">
         <div class="status"><b>●</b> Connected · 203.0.113.10</div>
+        <div class="status">2h 14m · ↓ 1.3 GB  ↑ 80.0 MB · 42 ms</div>
         <div class="sel">Turn Off</div>
         <hr>
         <div class="check">Block internet if the VPN drops</div>
+        <div class="check">Allow local network</div>
         <div>Disguise as web traffic</div>
         <div>Change Access Key…</div>
         <div class="check">Open at Login</div>
@@ -256,7 +258,7 @@ footer { border-top: 1px solid var(--line); padding-top: 1.25rem; display: flex;
         <p>Paste the <code>vpn://</code> access key when asked. You're connected. From now on, use the shield in the menu bar to turn it on and off.</p>
       </li>
     </ol>
-    <p class="note">VPN turns itself back on after a restart if you left it on. While it's on, nothing leaves your Mac outside the tunnel unless you untick "Block internet if the VPN drops".</p>
+    <p class="note">VPN turns itself back on after a restart if you left it on. While it's on, nothing leaves your Mac outside the tunnel unless you untick "Block internet if the VPN drops". Printers, AirDrop and other devices on your own network keep working unless you untick "Allow local network". The menu tells you when an update is out.</p>
   </section>
 
   <section id="linux" aria-labelledby="linux-h">
@@ -285,7 +287,7 @@ sudo vpn setup</code></pre><button class="copy" type="button" data-copy="c-serve
         <h3>Sharing with others</h3>
         <div class="cmds">
           <code>sudo vpn invite alex</code><span>new access key for Alex</span>
-          <code>sudo vpn devices</code><span>who has access</span>
+          <code>sudo vpn devices</code><span>who's online, and how much data each device has used</span>
           <code>sudo vpn revoke alex</code><span>Alex's key stops working at once</span>
         </div>
         <p class="note">Each person gets their own key. Their traffic leaves from your server's address, so only invite people you trust.</p>

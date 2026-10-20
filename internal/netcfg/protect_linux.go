@@ -5,36 +5,56 @@ import (
 	"log"
 	"net/netip"
 	"os/exec"
-	"strconv"
 )
 
 const killSwitchChain = "VPN_KILLSWITCH"
 
 // KillSwitch blocks all outgoing traffic except through the tunnel and to
-// the VPN server itself, so nothing leaks if the tunnel drops. It also
-// blocks all IPv6, which the tunnel doesn't carry.
-func KillSwitch(tunName string, server netip.AddrPort) (Cleanup, error) {
+// the VPN server itself (any protocol, so SSH to it still works), so nothing
+// leaks if the tunnel drops. It also blocks all IPv6, which the tunnel
+// doesn't carry. With allowLAN, the local network stays reachable too.
+func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
 	Reset() // remove leftovers from a crashed run
-	v4 := [][]string{
-		{"iptables", "-N", killSwitchChain},
-		{"iptables", "-A", killSwitchChain, "-o", "lo", "-j", "ACCEPT"},
-		{"iptables", "-A", killSwitchChain, "-o", tunName, "-j", "ACCEPT"},
-		{"iptables", "-A", killSwitchChain, "-p", "udp", "-d", server.Addr().String(), "--dport", strconv.Itoa(int(server.Port())), "-j", "ACCEPT"},
-		{"iptables", "-A", killSwitchChain, "-p", "udp", "--sport", "68", "--dport", "67", "-j", "ACCEPT"},
-		{"iptables", "-A", killSwitchChain, "-j", "REJECT"},
-		{"iptables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
-		{"ip6tables", "-N", killSwitchChain},
-		{"ip6tables", "-A", killSwitchChain, "-o", "lo", "-j", "ACCEPT"},
-		{"ip6tables", "-A", killSwitchChain, "-j", "REJECT"},
-		{"ip6tables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
-	}
-	for _, cmd := range v4 {
+	for _, cmd := range killSwitchCommands(tunName, server, allowLAN) {
 		if _, err := run(cmd[0], cmd[1:]...); err != nil {
 			Reset()
 			return nil, err
 		}
 	}
 	return func() { Reset() }, nil
+}
+
+func killSwitchCommands(tunName string, server netip.Addr, allowLAN bool) [][]string {
+	accept := func(ipt string, args ...string) []string {
+		return append(append([]string{ipt, "-A", killSwitchChain}, args...), "-j", "ACCEPT")
+	}
+	cmds := [][]string{
+		{"iptables", "-N", killSwitchChain},
+		accept("iptables", "-o", "lo"),
+		accept("iptables", "-o", tunName),
+		accept("iptables", "-d", server.String()),
+		accept("iptables", "-p", "udp", "--sport", "68", "--dport", "67"),
+	}
+	if allowLAN {
+		for _, n := range LocalNetworks4 {
+			cmds = append(cmds, accept("iptables", "-d", n))
+		}
+	}
+	cmds = append(cmds,
+		[]string{"iptables", "-A", killSwitchChain, "-j", "REJECT"},
+		[]string{"iptables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
+		[]string{"ip6tables", "-N", killSwitchChain},
+		accept("ip6tables", "-o", "lo"),
+	)
+	if allowLAN {
+		for _, n := range LocalNetworks6 {
+			cmds = append(cmds, accept("ip6tables", "-d", n))
+		}
+	}
+	return append(cmds,
+		[]string{"ip6tables", "-A", killSwitchChain, "-j", "REJECT"},
+		[]string{"ip6tables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
+	)
 }
 
 // SetDNS points the system resolver at servers for all lookups, using

@@ -22,6 +22,7 @@ import (
 	"github.com/vhittuvalli/vpn/internal/accesskey"
 	"github.com/vhittuvalli/vpn/internal/netcfg"
 	"github.com/vhittuvalli/vpn/internal/tunnel"
+	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
 const SocketPath = "/var/run/vpn.sock"
@@ -40,6 +41,7 @@ type Request struct {
 	Key        string `json:"key,omitempty"`         // CmdSetKey
 	KillSwitch *bool  `json:"kill_switch,omitempty"` // CmdSettings
 	HTTPS      *bool  `json:"https,omitempty"`       // CmdSettings
+	AllowLAN   *bool  `json:"allow_lan,omitempty"`   // CmdSettings
 }
 
 // Connection states.
@@ -50,14 +52,21 @@ const (
 )
 
 type Status struct {
-	Version    string `json:"version"`
-	State      string `json:"state"`
-	Error      string `json:"error,omitempty"` // why the last command or connection failed
-	HasKey     bool   `json:"has_key"`
-	Name       string `json:"name,omitempty"`   // this device's name on the server
-	Server     string `json:"server,omitempty"` // server host
-	KillSwitch bool   `json:"kill_switch"`
-	HTTPS      bool   `json:"https"`
+	Version string `json:"version"`
+	State   string `json:"state"`
+	Error   string `json:"error,omitempty"` // why the last command or connection failed
+	HasKey  bool   `json:"has_key"`
+	Name    string `json:"name,omitempty"`   // this device's name on the server
+	Server  string `json:"server,omitempty"` // server host
+
+	// While connected: since when, traffic so far and the latest round trip.
+	ConnectedSince int64  `json:"connected_since,omitempty"` // unix seconds
+	RxBytes        uint64 `json:"rx_bytes,omitempty"`
+	TxBytes        uint64 `json:"tx_bytes,omitempty"`
+	RTTMillis      int64  `json:"rtt_ms,omitempty"`
+	KillSwitch     bool   `json:"kill_switch"`
+	HTTPS          bool   `json:"https"`
+	AllowLAN       bool   `json:"allow_lan"`
 }
 
 // settings survive restarts, so the VPN comes back after a reboot if it
@@ -66,6 +75,7 @@ type settings struct {
 	On         bool `json:"on"`
 	KillSwitch bool `json:"kill_switch"`
 	HTTPS      bool `json:"https"`
+	AllowLAN   bool `json:"allow_lan"`
 }
 
 type Daemon struct {
@@ -83,6 +93,7 @@ type Daemon struct {
 	settings settings
 	state    string
 	lastErr  string
+	client   *vpn.Client // the current connection, for statistics
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
@@ -90,7 +101,7 @@ type Daemon struct {
 // Run serves commands until ctx is canceled, then disconnects.
 func Run(ctx context.Context, version string, owner int) error {
 	d := &Daemon{version: version, owner: owner, dir: stateDir, state: StateOff,
-		settings: settings{KillSwitch: true}}
+		settings: settings{KillSwitch: true, AllowLAN: true}}
 	if err := os.MkdirAll(d.dir, 0o700); err != nil {
 		return err
 	}
@@ -196,6 +207,9 @@ func (d *Daemon) handle(req Request) Status {
 		if req.HTTPS != nil {
 			d.settings.HTTPS = *req.HTTPS
 		}
+		if req.AllowLAN != nil {
+			d.settings.AllowLAN = *req.AllowLAN
+		}
 		d.save()
 		if d.settings.On {
 			d.stopLocked()
@@ -210,10 +224,17 @@ func (d *Daemon) handle(req Request) Status {
 func (d *Daemon) statusLocked() Status {
 	s := Status{
 		Version: d.version, State: d.state, Error: d.lastErr, HasKey: d.key != nil,
-		KillSwitch: d.settings.KillSwitch, HTTPS: d.settings.HTTPS,
+		KillSwitch: d.settings.KillSwitch, HTTPS: d.settings.HTTPS, AllowLAN: d.settings.AllowLAN,
 	}
 	if d.key != nil {
 		s.Name, s.Server = d.key.Name, d.key.Host
+	}
+	if d.state == StateOn && d.client != nil {
+		st := d.client.Stats()
+		if !st.ConnectedAt.IsZero() {
+			s.ConnectedSince = st.ConnectedAt.Unix()
+		}
+		s.RxBytes, s.TxBytes, s.RTTMillis = st.RxBytes, st.TxBytes, st.RTT.Milliseconds()
 	}
 	return s
 }
@@ -221,7 +242,7 @@ func (d *Daemon) statusLocked() Status {
 // startLocked connects in the background, retrying if the tunnel fails
 // until the VPN is turned off. d.mu must be held.
 func (d *Daemon) startLocked() {
-	cfg, err := d.key.Client(d.settings.HTTPS, d.settings.KillSwitch)
+	cfg, err := d.key.Client(d.settings.HTTPS, d.settings.KillSwitch, d.settings.AllowLAN)
 	if err != nil {
 		d.lastErr = err.Error()
 		return
@@ -232,12 +253,13 @@ func (d *Daemon) startLocked() {
 	go func() {
 		defer close(done)
 		for ctx.Err() == nil {
-			err := tunnel.Run(ctx, cfg, func(s tunnel.State) {
+			err := tunnel.Run(ctx, cfg, func(s tunnel.State, c *vpn.Client) {
 				d.mu.Lock()
 				defer d.mu.Unlock()
 				if ctx.Err() != nil {
 					return
 				}
+				d.client = c
 				if s == tunnel.Connected {
 					d.state, d.lastErr = StateOn, ""
 				} else {
@@ -274,7 +296,7 @@ func (d *Daemon) stopLocked() {
 	d.mu.Unlock()
 	<-done
 	d.mu.Lock()
-	d.state = StateOff
+	d.state, d.client = StateOff, nil
 }
 
 func (d *Daemon) load() {
