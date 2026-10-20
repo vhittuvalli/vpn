@@ -77,3 +77,35 @@ func TestParseRejects(t *testing.T) {
 		}
 	}
 }
+
+// Access keys are pasted by people and come from chats and email, so Parse
+// must handle anything without panicking, and whatever it accepts must
+// survive a round trip.
+func FuzzParse(f *testing.F) {
+	server, _ := protocol.GeneratePrivateKey()
+	device, _ := protocol.GeneratePrivateKey()
+	good := (&Key{
+		Name: "laptop", Host: "203.0.113.10", UDPPort: 51820, HTTPSPort: 443,
+		ServerPublicKey: server.Public(), PrivateKey: device,
+		Address: netip.MustParsePrefix("10.8.0.2/24"),
+	}).String()
+	f.Add(good)
+	f.Add("vpn://")
+	f.Add("vpn://e30")
+	f.Fuzz(func(t *testing.T, s string) {
+		k, err := Parse(s)
+		if err != nil {
+			return
+		}
+		again, err := Parse(k.String())
+		if err != nil {
+			t.Fatalf("re-parsing %q: %v", k.String(), err)
+		}
+		if *again != *k {
+			t.Fatalf("round trip changed the key: %+v != %+v", again, k)
+		}
+		if _, err := k.Client(false, true, true); err != nil && k.UDPPort != 0 {
+			t.Fatalf("accepted key with a UDP port can't make a client config: %v", err)
+		}
+	})
+}
