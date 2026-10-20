@@ -21,3 +21,33 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test -race ./...
+
+  # Each fuzz target gets 30 seconds of random input on every push and PR.
+  # Plain `go test` above already runs their seed inputs.
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - ./internal/protocol FuzzConsumeInitiation
+          - ./internal/protocol FuzzConsumeResponse
+          - ./internal/protocol FuzzSessionOpen
+          - ./internal/protocol FuzzReassembler
+          - ./internal/protocol FuzzConsumeCookieReply
+          - ./internal/protocol FuzzReceiverIndex
+          - ./internal/accesskey FuzzParse
+          - ./internal/vpn FuzzIPv4Addrs
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          set -- ${{ matrix.target }}
+          go test "$1" -run XXX -fuzz "^$2\$" -fuzztime 30s
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crash-${{ strategy.job-index }}
+          path: internal/**/testdata/fuzz
