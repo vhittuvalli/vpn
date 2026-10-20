@@ -65,13 +65,20 @@ func Run(ctx context.Context, cfg *config.Client, onState func(State, *vpn.Clien
 			cleanups[i]()
 		}
 	}()
-	if cfg.KillSwitch {
-		undo, err := netcfg.KillSwitch(dev.Name(), server.Addr(), cfg.AllowLAN)
+	// When all traffic goes through the VPN, IPv6 (which the tunnel doesn't
+	// carry) is blocked even without the kill switch, or it would quietly
+	// bypass the tunnel and reveal this machine's address.
+	if cfg.KillSwitch || cfg.RouteAllTraffic {
+		undo, err := netcfg.KillSwitch(dev.Name(), server.Addr(), cfg.AllowLAN, cfg.KillSwitch)
 		if err != nil {
 			return fmt.Errorf("kill switch: %w", err)
 		}
 		addCleanup(undo)
-		log.Print("kill switch on: traffic outside the VPN is blocked")
+		if cfg.KillSwitch {
+			log.Print("kill switch on: traffic outside the VPN is blocked")
+		} else {
+			log.Print("IPv6 blocked so it can't bypass the VPN")
+		}
 	}
 
 	var conn vpn.ClientTransport

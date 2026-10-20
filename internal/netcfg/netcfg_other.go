@@ -19,7 +19,7 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 	return nil, errUnsupported
 }
 
-func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
+func KillSwitch(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) (Cleanup, error) {
 	return nil, errUnsupported
 }
 
