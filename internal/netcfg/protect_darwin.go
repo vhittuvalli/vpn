@@ -15,12 +15,14 @@ import (
 // system's own configuration is never edited.
 const pfAnchor = "com.apple/250.vpn-killswitch"
 
-// KillSwitch blocks all outgoing traffic except through the tunnel and to
-// the VPN server itself (any protocol, so SSH to it still works), so nothing
-// leaks if the tunnel drops. It also blocks all IPv6, which the tunnel
-// doesn't carry. With allowLAN, the local network stays reachable too.
-func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
-	rules := pfRules(tunName, server, allowLAN)
+// KillSwitch blocks outgoing traffic that would bypass the tunnel. IPv6,
+// which the tunnel doesn't carry, is always blocked so it can't leak around
+// it. With blockIPv4 (the kill switch proper), all IPv4 is blocked too except
+// through the tunnel and to the VPN server itself (any protocol, so SSH to it
+// still works), so nothing leaks if the tunnel drops. With allowLAN, the
+// local network stays reachable.
+func KillSwitch(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) (Cleanup, error) {
+	rules := pfRules(tunName, server, allowLAN, blockIPv4)
 
 	// Make sure the main ruleset references the com.apple anchors.
 	if out, _ := run("pfctl", "-s", "rules"); !strings.Contains(out, `anchor "com.apple/*"`) {
@@ -52,17 +54,25 @@ func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, erro
 	}, nil
 }
 
-func pfRules(tunName string, server netip.Addr, allowLAN bool) string {
+func pfRules(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pass out quick on lo0 all\n")
 	fmt.Fprintf(&b, "pass out quick on %s all\n", tunName)
-	fmt.Fprintf(&b, "pass out quick inet from any to %s\n", server)
-	fmt.Fprintf(&b, "pass out quick inet proto udp from any port 68 to any port 67\n")
+	if blockIPv4 {
+		fmt.Fprintf(&b, "pass out quick inet from any to %s\n", server)
+		fmt.Fprintf(&b, "pass out quick inet proto udp from any port 68 to any port 67\n")
+		if allowLAN {
+			fmt.Fprintf(&b, "pass out quick inet from any to { %s }\n", strings.Join(LocalNetworks4, ", "))
+		}
+	}
 	if allowLAN {
-		fmt.Fprintf(&b, "pass out quick inet from any to { %s }\n", strings.Join(LocalNetworks4, ", "))
 		fmt.Fprintf(&b, "pass out quick inet6 from any to { %s }\n", strings.Join(LocalNetworks6, ", "))
 	}
-	fmt.Fprintf(&b, "block drop out quick all\n")
+	if blockIPv4 {
+		fmt.Fprintf(&b, "block drop out quick all\n")
+	} else {
+		fmt.Fprintf(&b, "block drop out quick inet6 all\n")
+	}
 	return b.String()
 }
 

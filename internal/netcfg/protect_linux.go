@@ -9,13 +9,15 @@ import (
 
 const killSwitchChain = "VPN_KILLSWITCH"
 
-// KillSwitch blocks all outgoing traffic except through the tunnel and to
-// the VPN server itself (any protocol, so SSH to it still works), so nothing
-// leaks if the tunnel drops. It also blocks all IPv6, which the tunnel
-// doesn't carry. With allowLAN, the local network stays reachable too.
-func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, error) {
+// KillSwitch blocks outgoing traffic that would bypass the tunnel. IPv6,
+// which the tunnel doesn't carry, is always blocked so it can't leak around
+// it. With blockIPv4 (the kill switch proper), all IPv4 is blocked too except
+// through the tunnel and to the VPN server itself (any protocol, so SSH to it
+// still works), so nothing leaks if the tunnel drops. With allowLAN, the
+// local network stays reachable.
+func KillSwitch(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) (Cleanup, error) {
 	Reset() // remove leftovers from a crashed run
-	for _, cmd := range killSwitchCommands(tunName, server, allowLAN) {
+	for _, cmd := range killSwitchCommands(tunName, server, allowLAN, blockIPv4) {
 		if _, err := run(cmd[0], cmd[1:]...); err != nil {
 			Reset()
 			return nil, err
@@ -24,25 +26,30 @@ func KillSwitch(tunName string, server netip.Addr, allowLAN bool) (Cleanup, erro
 	return func() { Reset() }, nil
 }
 
-func killSwitchCommands(tunName string, server netip.Addr, allowLAN bool) [][]string {
+func killSwitchCommands(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) [][]string {
 	accept := func(ipt string, args ...string) []string {
 		return append(append([]string{ipt, "-A", killSwitchChain}, args...), "-j", "ACCEPT")
 	}
-	cmds := [][]string{
-		{"iptables", "-N", killSwitchChain},
-		accept("iptables", "-o", "lo"),
-		accept("iptables", "-o", tunName),
-		accept("iptables", "-d", server.String()),
-		accept("iptables", "-p", "udp", "--sport", "68", "--dport", "67"),
-	}
-	if allowLAN {
-		for _, n := range LocalNetworks4 {
-			cmds = append(cmds, accept("iptables", "-d", n))
+	var cmds [][]string
+	if blockIPv4 {
+		cmds = [][]string{
+			{"iptables", "-N", killSwitchChain},
+			accept("iptables", "-o", "lo"),
+			accept("iptables", "-o", tunName),
+			accept("iptables", "-d", server.String()),
+			accept("iptables", "-p", "udp", "--sport", "68", "--dport", "67"),
 		}
+		if allowLAN {
+			for _, n := range LocalNetworks4 {
+				cmds = append(cmds, accept("iptables", "-d", n))
+			}
+		}
+		cmds = append(cmds,
+			[]string{"iptables", "-A", killSwitchChain, "-j", "REJECT"},
+			[]string{"iptables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
+		)
 	}
 	cmds = append(cmds,
-		[]string{"iptables", "-A", killSwitchChain, "-j", "REJECT"},
-		[]string{"iptables", "-I", "OUTPUT", "1", "-j", killSwitchChain},
 		[]string{"ip6tables", "-N", killSwitchChain},
 		accept("ip6tables", "-o", "lo"),
 	)

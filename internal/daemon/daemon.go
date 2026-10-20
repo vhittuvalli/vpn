@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
+	"github.com/vhittuvalli/vpn/internal/config"
 	"github.com/vhittuvalli/vpn/internal/netcfg"
+	"github.com/vhittuvalli/vpn/internal/netid"
 	"github.com/vhittuvalli/vpn/internal/tunnel"
 	"github.com/vhittuvalli/vpn/internal/vpn"
 )
@@ -34,6 +36,7 @@ const (
 	CmdOff      = "off"
 	CmdSetKey   = "set-key"
 	CmdSettings = "settings"
+	CmdTrust    = "trust" // trust or stop trusting the current network
 )
 
 type Request struct {
@@ -42,6 +45,7 @@ type Request struct {
 	KillSwitch *bool  `json:"kill_switch,omitempty"` // CmdSettings
 	HTTPS      *bool  `json:"https,omitempty"`       // CmdSettings
 	AllowLAN   *bool  `json:"allow_lan,omitempty"`   // CmdSettings
+	Trust      *bool  `json:"trust,omitempty"`       // CmdTrust
 }
 
 // Connection states.
@@ -49,6 +53,7 @@ const (
 	StateOff        = "off"
 	StateConnecting = "connecting"
 	StateOn         = "on"
+	StatePaused     = "paused" // on, but this is a trusted network
 )
 
 type Status struct {
@@ -67,15 +72,26 @@ type Status struct {
 	KillSwitch     bool   `json:"kill_switch"`
 	HTTPS          bool   `json:"https"`
 	AllowLAN       bool   `json:"allow_lan"`
+
+	// The network this machine is on, if it could be identified.
+	Network        string `json:"network,omitempty"`
+	NetworkTrusted bool   `json:"network_trusted"`
 }
 
 // settings survive restarts, so the VPN comes back after a reboot if it
 // was on.
 type settings struct {
-	On         bool `json:"on"`
-	KillSwitch bool `json:"kill_switch"`
-	HTTPS      bool `json:"https"`
-	AllowLAN   bool `json:"allow_lan"`
+	On         bool             `json:"on"`
+	KillSwitch bool             `json:"kill_switch"`
+	HTTPS      bool             `json:"https"`
+	AllowLAN   bool             `json:"allow_lan"`
+	Trusted    []TrustedNetwork `json:"trusted,omitempty"`
+}
+
+// TrustedNetwork is a network the VPN pauses on.
+type TrustedNetwork struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type Daemon struct {
@@ -96,12 +112,29 @@ type Daemon struct {
 	client   *vpn.Client // the current connection, for statistics
 	cancel   context.CancelFunc
 	done     chan struct{}
+	network  netid.Network // zero if unknown
+	override bool          // turned on by hand while on a trusted network
+
+	// Replaced in tests.
+	runTunnel      func(context.Context, *config.Client, func(tunnel.State, *vpn.Client)) error
+	currentNetwork func() (netid.Network, error)
+}
+
+// networkCheckInterval is how often the service looks for a network change.
+const networkCheckInterval = 5 * time.Second
+
+func newDaemon(dir, version string, owner int) *Daemon {
+	return &Daemon{
+		version: version, owner: owner, dir: dir, state: StateOff,
+		settings:       settings{KillSwitch: true, AllowLAN: true},
+		runTunnel:      tunnel.Run,
+		currentNetwork: netid.Current,
+	}
 }
 
 // Run serves commands until ctx is canceled, then disconnects.
 func Run(ctx context.Context, version string, owner int) error {
-	d := &Daemon{version: version, owner: owner, dir: stateDir, state: StateOff,
-		settings: settings{KillSwitch: true, AllowLAN: true}}
+	d := newDaemon(stateDir, version, owner)
 	if err := os.MkdirAll(d.dir, 0o700); err != nil {
 		return err
 	}
@@ -127,11 +160,22 @@ func Run(ctx context.Context, version string, owner int) error {
 	}()
 	log.Printf("vpn service %s listening on %s (owner uid %d)", version, SocketPath, owner)
 
+	d.checkNetwork()
 	d.mu.Lock()
-	if d.settings.On && d.key != nil {
-		d.startLocked()
-	}
+	d.applyLocked(false)
 	d.mu.Unlock()
+	go func() {
+		t := time.NewTicker(networkCheckInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				d.checkNetwork()
+			}
+		}
+	}()
 
 	for {
 		conn, err := ln.AcceptUnix()
@@ -177,13 +221,15 @@ func (d *Daemon) handle(req Request) Status {
 			break
 		}
 		d.settings.On = true
+		// Turning it on by hand on a trusted network connects anyway, until
+		// the network changes.
+		d.override = d.trustedLocked()
 		d.save()
-		d.stopLocked()
-		d.startLocked()
+		d.applyLocked(true)
 	case CmdOff:
-		d.settings.On = false
+		d.settings.On, d.override = false, false
 		d.save()
-		d.stopLocked()
+		d.applyLocked(false)
 		d.lastErr = ""
 	case CmdSetKey:
 		k, err := accesskey.Parse(req.Key)
@@ -196,10 +242,7 @@ func (d *Daemon) handle(req Request) Status {
 			break
 		}
 		d.key, d.lastErr = k, ""
-		if d.settings.On {
-			d.stopLocked()
-			d.startLocked()
-		}
+		d.applyLocked(true)
 	case CmdSettings:
 		if req.KillSwitch != nil {
 			d.settings.KillSwitch = *req.KillSwitch
@@ -211,10 +254,24 @@ func (d *Daemon) handle(req Request) Status {
 			d.settings.AllowLAN = *req.AllowLAN
 		}
 		d.save()
-		if d.settings.On {
-			d.stopLocked()
-			d.startLocked()
+		d.applyLocked(true)
+	case CmdTrust:
+		if d.network.ID == "" {
+			d.lastErr = "can't tell which network this is yet; try again in a few seconds"
+			break
 		}
+		trusted := d.settings.Trusted[:0:0]
+		for _, n := range d.settings.Trusted {
+			if n.ID != d.network.ID {
+				trusted = append(trusted, n)
+			}
+		}
+		if req.Trust != nil && *req.Trust {
+			trusted = append(trusted, TrustedNetwork{ID: d.network.ID, Name: d.network.Name})
+		}
+		d.settings.Trusted, d.override, d.lastErr = trusted, false, ""
+		d.save()
+		d.applyLocked(false)
 	default:
 		d.lastErr = "unknown command " + req.Cmd
 	}
@@ -229,6 +286,7 @@ func (d *Daemon) statusLocked() Status {
 	if d.key != nil {
 		s.Name, s.Server = d.key.Name, d.key.Host
 	}
+	s.Network, s.NetworkTrusted = d.network.Name, d.trustedLocked()
 	if d.state == StateOn && d.client != nil {
 		st := d.client.Stats()
 		if !st.ConnectedAt.IsZero() {
@@ -237,6 +295,57 @@ func (d *Daemon) statusLocked() Status {
 		s.RxBytes, s.TxBytes, s.RTTMillis = st.RxBytes, st.TxBytes, st.RTT.Milliseconds()
 	}
 	return s
+}
+
+// trustedLocked reports whether the current network is trusted.
+func (d *Daemon) trustedLocked() bool {
+	for _, n := range d.settings.Trusted {
+		if d.network.ID != "" && n.ID == d.network.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// applyLocked brings the tunnel in line with the settings: connected while
+// the VPN is on, except on a trusted network (unless turned on by hand
+// there). With restart, a running tunnel is restarted to pick up changed
+// settings. d.mu must be held.
+func (d *Daemon) applyLocked(restart bool) {
+	on := d.settings.On && d.key != nil
+	want := on && (d.override || !d.trustedLocked())
+	if restart || !want {
+		d.stopLocked()
+	}
+	if want && d.cancel == nil {
+		d.startLocked()
+	}
+	if !want {
+		if on {
+			d.state = StatePaused
+		} else {
+			d.state = StateOff
+		}
+	}
+}
+
+// checkNetwork looks at which network this machine is on and, when it has
+// changed, pauses or resumes the VPN for trusted networks.
+func (d *Daemon) checkNetwork() {
+	n, err := d.currentNetwork()
+	if err != nil {
+		return // unknown for now (e.g. between networks); keep things as they are
+	}
+	d.op.Lock()
+	defer d.op.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n.ID == d.network.ID {
+		return
+	}
+	log.Printf("network is now %s", n.Name)
+	d.network, d.override = n, false
+	d.applyLocked(false)
 }
 
 // startLocked connects in the background, retrying if the tunnel fails
@@ -253,7 +362,7 @@ func (d *Daemon) startLocked() {
 	go func() {
 		defer close(done)
 		for ctx.Err() == nil {
-			err := tunnel.Run(ctx, cfg, func(s tunnel.State, c *vpn.Client) {
+			err := d.runTunnel(ctx, cfg, func(s tunnel.State, c *vpn.Client) {
 				d.mu.Lock()
 				defer d.mu.Unlock()
 				if ctx.Err() != nil {

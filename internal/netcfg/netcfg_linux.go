@@ -52,21 +52,8 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 	if _, err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return nil, err
 	}
-	rules := [][]string{
-		{"-t", "nat", "POSTROUTING", "-s", subnet.Masked().String(), "-o", outInterface, "-j", "MASQUERADE"},
-		{"-t", "filter", "FORWARD", "-i", tunName, "-j", "ACCEPT"},
-		{"-t", "filter", "FORWARD", "-o", tunName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
-	}
-	// Clients get the internet, not the server's own networks: block private,
-	// carrier-grade NAT and link-local addresses, which on a cloud VM include
-	// the provider's private network and its metadata service (169.254.169.254).
-	// Traffic between clients (in and out of the tunnel) is still allowed.
-	// Rules are inserted at the top, so these land above the ACCEPT.
-	for _, blocked := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"} {
-		rules = append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "!", "-o", tunName, "-d", blocked, "-j", "DROP"})
-	}
 	var do, undo [][]string
-	for _, r := range rules {
+	for _, r := range natRules(tunName, outInterface, subnet) {
 		table, chain, spec := r[:2], r[2], r[3:]
 		do = append(do, append(append([]string{"iptables"}, table...), append([]string{"-I", chain}, spec...)...))
 		undo = append(undo, append(append([]string{"iptables"}, table...), append([]string{"-D", chain}, spec...)...))
@@ -76,4 +63,25 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 		return nil, fmt.Errorf("enabling NAT: %w", err)
 	}
 	return cleanup, nil
+}
+
+// natRules lists the NAT and forwarding rules as (table, chain, spec...).
+// They are inserted at the top of their chains in order, so later rules end
+// up above earlier ones.
+func natRules(tunName, outInterface string, subnet netip.Prefix) [][]string {
+	rules := [][]string{
+		{"-t", "nat", "POSTROUTING", "-s", subnet.Masked().String(), "-o", outInterface, "-j", "MASQUERADE"},
+		{"-t", "filter", "FORWARD", "-i", tunName, "-j", "ACCEPT"},
+		{"-t", "filter", "FORWARD", "-o", tunName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	}
+	// Clients get the internet, not the server's own networks: block private,
+	// carrier-grade NAT and link-local addresses, which on a cloud VM include
+	// the provider's private network and its metadata service (169.254.169.254).
+	// Rules are inserted at the top, so these land above the ACCEPT.
+	for _, blocked := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"} {
+		rules = append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "!", "-o", tunName, "-d", blocked, "-j", "DROP"})
+	}
+	// Devices can't reach each other through the tunnel: with several
+	// people on one server, nobody can connect to anyone else's machine.
+	return append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "-o", tunName, "-j", "DROP"})
 }

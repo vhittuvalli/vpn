@@ -161,7 +161,9 @@ sudo vpn devices             # who's online, last seen, data used per device
 sudo vpn revoke alex-phone   # that key stops working immediately
 ```
 
-The running server picks up changes without dropping anyone else. An access
+The running server picks up changes without dropping anyone else. Devices
+can reach the internet through the server, but not each other or the server's
+private network. An access
 key (`vpn://...`) contains that device's private key, so treat it like a
 password.
 
@@ -181,6 +183,14 @@ server, block traffic if the tunnel drops (on by default), keep the local
 network reachable for printers and AirDrop (on by default), or switch to the
 HTTPS disguise. If it was on when you shut down, it reconnects after a
 restart. The menu shows "Update Available" when a newer release is out.
+
+**Trusted networks.** Tick "Trust This Network" on a network you trust, such
+as home: the VPN pauses there and reconnects on any other network. "Connect
+Anyway" overrides the pause until you change networks. A network is matched by
+its Wi-Fi name *and* its router's hardware address, so a hotspot that merely
+copies the name isn't trusted. (A determined attacker on the same network
+could still copy the router's address too, so only trust networks you
+control.)
 
 How it fits together: the menu bar app runs as you; a small root service
 (`/Library/PrivilegedHelperTools/com.vhittuvalli.vpn`, run by launchd) owns
