@@ -68,7 +68,7 @@ type app struct {
 	busy    bool // a command is in flight
 	setupOK bool
 
-	mStatus, mDetails, mToggle, mKill, mLAN, mHTTPS, mKey, mLogin, mUpdate, mQuit *systray.MenuItem
+	mStatus, mDetails, mToggle, mAnyway, mTrust, mKill, mLAN, mHTTPS, mKey, mLogin, mUpdate, mQuit *systray.MenuItem
 }
 
 func (a *app) ready() {
@@ -81,7 +81,11 @@ func (a *app) ready() {
 	a.mDetails.Disable()
 	a.mDetails.Hide()
 	a.mToggle = systray.AddMenuItem("Turn On", "")
+	a.mAnyway = systray.AddMenuItem("Connect Anyway", "Connect on this trusted network until you change networks")
+	a.mAnyway.Hide()
 	systray.AddSeparator()
+	a.mTrust = systray.AddMenuItemCheckbox("Trust This Network", "The VPN pauses on trusted networks and connects everywhere else", false)
+	a.mTrust.Disable()
 	a.mKill = systray.AddMenuItemCheckbox("Block internet if the VPN drops", "Nothing leaves this Mac outside the VPN while it's on", true)
 	a.mLAN = systray.AddMenuItemCheckbox("Allow local network", "Printers, AirDrop, Chromecast and your router stay reachable while connected", true)
 	a.mHTTPS = systray.AddMenuItemCheckbox("Disguise as web traffic", "Tunnel over HTTPS on port 443, for networks that block VPNs", false)
@@ -201,6 +205,8 @@ func (a *app) show(s *daemon.Status) {
 		a.setStatusText("Add an access key to get started")
 	case s.State == daemon.StateOn:
 		a.setStatusText("Connected · " + s.Server)
+	case s.State == daemon.StatePaused:
+		a.setStatusText("Paused on trusted network · " + s.Network)
 	case s.State == daemon.StateConnecting && s.Error != "":
 		a.setStatusText("Reconnecting… (" + shorten(s.Error, 40) + ")")
 	case s.State == daemon.StateConnecting:
@@ -229,6 +235,19 @@ func (a *app) show(s *daemon.Status) {
 	} else {
 		a.mToggle.Disable()
 	}
+	if s.State == daemon.StatePaused && !busy {
+		a.mAnyway.Show()
+	} else {
+		a.mAnyway.Hide()
+	}
+	if s.Network != "" {
+		a.mTrust.SetTitle("Trust This Network (" + s.Network + ")")
+		a.mTrust.Enable()
+	} else {
+		a.mTrust.SetTitle("Trust This Network")
+		a.mTrust.Disable()
+	}
+	setChecked(a.mTrust, s.NetworkTrusted)
 	systray.SetTemplateIcon(shieldIcon(s.State == daemon.StateOn), shieldIcon(s.State == daemon.StateOn))
 	setChecked(a.mKill, s.KillSwitch)
 	setChecked(a.mHTTPS, s.HTTPS)
@@ -266,6 +285,11 @@ func (a *app) clicks() {
 			} else {
 				a.command("Connecting…", daemon.Request{Cmd: daemon.CmdOn})
 			}
+		case <-a.mAnyway.ClickedCh:
+			a.command("Connecting…", daemon.Request{Cmd: daemon.CmdOn})
+		case <-a.mTrust.ClickedCh:
+			v := !a.mTrust.Checked()
+			a.command("Applying…", daemon.Request{Cmd: daemon.CmdTrust, Trust: &v})
 		case <-a.mKill.ClickedCh:
 			v := !a.mKill.Checked()
 			a.command("Applying…", daemon.Request{Cmd: daemon.CmdSettings, KillSwitch: &v})
