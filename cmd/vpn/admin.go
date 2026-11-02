@@ -226,7 +226,7 @@ func devices(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "DEVICE\tADDRESS\tSTATUS\tLAST SEEN\tFROM\tDOWNLOADED\tUPLOADED")
+	fmt.Fprintln(w, "DEVICE\tADDRESS\tSTATUS\tLAST SEEN\tFROM\tDOWNLOADED\tUPLOADED\tGUEST LIMITS")
 	for _, p := range f.Peers {
 		st, known := byKey[p.PublicKey]
 		state, seen, from, down, up := "offline", "never", "-", "-", "-"
@@ -242,7 +242,7 @@ func devices(args []string) error {
 			}
 			down, up = human.Bytes(st.TxBytes), human.Bytes(st.RxBytes)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, state, seen, from, down, up)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, state, seen, from, down, up, guestLimits(p, st, now))
 	}
 	w.Flush()
 	switch {
@@ -252,6 +252,23 @@ func devices(args []string) error {
 		fmt.Println("\nThe vpn server doesn't seem to be running; showing the last known usage.")
 	}
 	return nil
+}
+
+// guestLimits describes a guest's remaining time and data use, e.g.
+// "42m left · 120.5 MB of 500.0 MB"; "-" for regular devices.
+func guestLimits(p config.PeerFile, st vpn.PeerStats, now time.Time) string {
+	if !p.Guest {
+		return "-"
+	}
+	left := "expired"
+	if t, err := time.Parse(time.RFC3339, p.ExpiresAt); err == nil && now.Before(t) {
+		left = human.Duration(t.Sub(now)) + " left"
+	}
+	used := human.Bytes(st.RxBytes + st.TxBytes)
+	if p.QuotaBytes == 0 {
+		return left + " · " + used + " used"
+	}
+	return left + " · " + used + " of " + human.Bytes(p.QuotaBytes)
 }
 
 // reloadServer asks a running vpn service to re-read its device list.

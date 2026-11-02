@@ -37,6 +37,7 @@ const usage = `usage:
     sudo vpn invite NAME            add a device and print its access key
     sudo vpn revoke NAME            remove a device
     sudo vpn devices                list devices
+    sudo vpn guests [on|off|purge]  self-serve guest keys for visitors to your site
 
   Connect:
     sudo vpn connect ACCESS_KEY     connect until Ctrl-C (add --https to look like web traffic)
@@ -86,6 +87,8 @@ func main() {
 		err = revoke(os.Args[2:])
 	case "devices":
 		err = devices(os.Args[2:])
+	case "guests":
+		err = guests(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
 	case "app":
