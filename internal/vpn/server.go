@@ -39,6 +39,7 @@ type Server struct {
 	peersByKey map[protocol.PublicKey]*serverPeer
 	peersByIP  map[netip.Addr]*serverPeer
 	carried    map[protocol.PublicKey]PeerStats // totals from earlier runs (LoadStatus)
+	guestRate  float64                          // Mbit/s cap for guests; 0 means none
 
 	loadMu       sync.Mutex
 	loadWindow   time.Time
@@ -62,6 +63,9 @@ type serverPeer struct {
 	carried       PeerStats // totals from earlier runs
 
 	rxBytes, txBytes atomic.Uint64 // IP traffic from and to the peer, this run
+
+	guest  *guestLimits // nil for regular devices
+	cutOff atomic.Bool  // a guest past its limits
 }
 
 // onlineWindow is how recently a peer must have sent something to count as
@@ -93,6 +97,7 @@ func NewServer(cfg *config.Server, dev tun.Device, transports ...ServerTransport
 		sessions:      map[uint32]*serverSession{},
 		lastBySource:  map[string]time.Time{},
 	}
+	s.guestRate = cfg.Guests.RateLimitMbps
 	s.SetPeers(cfg.Peers)
 	return s
 }
@@ -105,8 +110,11 @@ func (s *Server) SetPeers(peers []config.Peer) (added, removed int) {
 	s.peersMu.Lock()
 	for _, p := range peers {
 		sp := s.peersByKey[p.PublicKey]
-		if sp == nil || sp.ip != p.Address || sp.name != p.Name {
-			sp = &serverPeer{name: p.Name, publicKey: p.PublicKey, ip: p.Address, carried: s.carried[p.PublicKey]}
+		if sp == nil || sp.ip != p.Address || sp.name != p.Name || (sp.guest != nil) != p.Guest {
+			sp = &serverPeer{
+				name: p.Name, publicKey: p.PublicKey, ip: p.Address, carried: s.carried[p.PublicKey],
+				guest: newGuestLimits(p, s.guestRate),
+			}
 			added++
 		}
 		byKey[p.PublicKey], byIP[p.Address] = sp, sp
@@ -234,6 +242,9 @@ func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
 	if p == nil {
 		return // revoked while the handshake was being checked
 	}
+	if p.guestCutOff(time.Now()) {
+		return // a guest out of time or data gets no new session
+	}
 	p.mu.Lock()
 	if !init.Timestamp.After(p.lastTimestamp) {
 		p.mu.Unlock()
@@ -322,6 +333,9 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 	if s.peerByKey(p.publicKey) != p {
 		return // revoked
 	}
+	if p.guestCutOff(time.Now()) {
+		return
+	}
 	p.mu.Lock()
 	if p.endpoint != ep {
 		log.Printf("peer %s moved to %s", p.name, ep)
@@ -336,6 +350,9 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 	// could impersonate another.
 	if src, ok := ipv4Src(packet); !ok || src != p.ip {
 		return
+	}
+	if !p.guestAllow(len(packet)) {
+		return // over the guest bandwidth cap
 	}
 	p.rxBytes.Add(uint64(len(packet)))
 	if _, err := s.dev.Write(packet); err != nil {
@@ -355,7 +372,7 @@ func (s *Server) tunLoop() error {
 			continue
 		}
 		p := s.peerByIP(dst)
-		if p == nil {
+		if p == nil || p.guestCutOff(time.Now()) || !p.guestAllow(n) {
 			continue
 		}
 		p.mu.Lock()
