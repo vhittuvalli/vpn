@@ -99,6 +99,13 @@ footer p { margin: 0; }
 #guest-result { margin-top: 1rem; }
 #guest-result pre code { word-break: break-all; white-space: pre-wrap; }
 #guest-error { margin-top: 0.75rem; color: var(--text); }
+.after { margin: -0.75rem 0 2rem; padding: 1rem 1.25rem; border: 1px solid var(--rule); border-radius: 10px; }
+.after:focus { outline: none; }
+.after ol { margin: 0.6rem 0 0; }
+.after li { margin-bottom: 0.6rem; }
+.after li:last-child { margin-bottom: 0; }
+.after .linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
+.after .linkish:hover { text-decoration: underline; }
 #guest-usage { margin-top: 0.9rem; max-width: 22rem; }
 #guest-usage .meter { height: 6px; border-radius: 3px; background: var(--code-bg); overflow: hidden; }
 #guest-usage .meter span { display: block; height: 100%; width: 0; background: var(--button); border-radius: 3px; }
@@ -118,6 +125,15 @@ footer p { margin: 0; }
   <div class="download">
     <a class="button" id="dl" href="https://github.com/vhittuvalli/vpn/releases/latest">Download for Mac</a>
     <p id="dl-info">Version 0.2.2 · macOS 12 or later · Apple silicon and Intel. On Linux? <a href="#linux">Use the command line version.</a></p>
+  </div>
+
+  <div class="after" id="after-download" tabindex="-1" hidden>
+    <strong>Your download has started.</strong> Three steps from here:
+    <ol>
+      <li>Open <code id="dmg-name">VPN.dmg</code> from your Downloads folder and drag VPN into Applications.</li>
+      <li>Open VPN. Because it isn't signed by Apple, macOS says it can't verify it; click <strong>Done</strong>. Then open System Settings → Privacy &amp; Security, scroll down to the message that VPN was blocked, and click <strong>Open Anyway</strong>. After that, VPN asks for your password once to set up the part that manages your connection.</li>
+      <li>Paste an access key when it asks. Don't have one? <button class="linkish" id="after-guest" type="button">Get a free guest key</button> that works for an hour.</li>
+    </ol>
   </div>
 
   <p>I built this to learn how VPNs actually work. It started as a command line tool and turned into a small Mac app. The encryption follows WireGuard's design, with ML-KEM and ML-DSA layered on top, so traffic recorded today should stay private even once someone has a quantum computer.</p>
@@ -303,6 +319,21 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
   refreshSlots();
 
   var dl = document.getElementById("dl");
+
+  // After the click (the download itself goes ahead normally), show what
+  // to do next right under the button.
+  var after = document.getElementById("after-download");
+  dl.addEventListener("click", function () {
+    setTimeout(function () {
+      after.hidden = false;
+      after.focus();
+    }, 300);
+  });
+  document.getElementById("after-guest").addEventListener("click", function () {
+    location.hash = "try";
+    var b = document.getElementById("guest-btn");
+    if (!b.disabled) b.click();
+  });
   var info = document.getElementById("dl-info");
 
   if (window.fetch) {
@@ -312,6 +343,7 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
         var dmg = (rel.assets || []).filter(function (a) { return /\.dmg$/.test(a.name); })[0];
         if (!dmg) return;
         dl.href = dmg.browser_download_url;
+        document.getElementById("dmg-name").textContent = dmg.name;
         info.firstChild.textContent = "Version " + rel.tag_name.replace(/^v/, "") + " · " +
           (dmg.size / 1048576).toFixed(1) + " MB · macOS 12 or later · Apple silicon and Intel. On Linux? ";
       })
