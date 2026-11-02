@@ -2,7 +2,8 @@
 // keys to visitors of the project site:
 //
 //	POST /guest-key     → {"key": "vpn://...", "expires_at": "...", "quota_bytes": N}
-//	GET  /guest-status  → {"available": true, "active": 3, "max": 20}
+//	GET  /guest-status  → {"available": true, "active": 1, "max": 3,
+//	                       "month_sent_bytes": N, "month_cap_bytes": N, "resets_at": "..."}
 //
 // Guests are created through the registry, the same way `vpn invite` adds
 // devices. Abuse limits: a few keys per client IP per day, a cap on active
@@ -27,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vhittuvalli/vpn/internal/budget"
 	"github.com/vhittuvalli/vpn/internal/config"
 	"github.com/vhittuvalli/vpn/internal/registry"
 )
@@ -47,7 +49,10 @@ type Handler struct {
 	OnIssue func()
 	// LogPath is where issued keys are recorded, one JSON line each.
 	LogPath string
-	Now     func() time.Time
+	// Budget reports this month's transfer against the cap; while it's
+	// exceeded (or unknown) no keys are issued. Nil means no cap.
+	Budget func() budget.Usage
+	Now    func() time.Time
 
 	mu       sync.Mutex
 	byClient map[string][]time.Time // issue times in the last 24 h, per client
@@ -70,9 +75,15 @@ type keyResponse struct {
 }
 
 type statusResponse struct {
-	Available bool `json:"available"`
-	Active    int  `json:"active"`
-	Max       int  `json:"max"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"` // when not available: disabled, full or budget
+	Active    int    `json:"active"`
+	Max       int    `json:"max"`
+
+	// This month's transfer for the whole server, against the cap.
+	MonthSentBytes uint64 `json:"month_sent_bytes,omitempty"`
+	MonthCapBytes  uint64 `json:"month_cap_bytes,omitempty"`
+	ResetsAt       string `json:"resets_at,omitempty"`
 }
 
 type errorResponse struct {
@@ -140,6 +151,13 @@ func (h *Handler) issue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "disabled", "guest access is turned off right now")
 		return
 	}
+	if h.Budget != nil {
+		if u := h.Budget(); u.Exceeded() {
+			w.Header().Set("Retry-After", strconv.Itoa(int(time.Until(u.ResetsAt).Seconds())+1))
+			writeError(w, http.StatusServiceUnavailable, "budget", "this month's demo bandwidth is used up; guest keys come back on "+u.ResetsAt.Format("January 2"))
+			return
+		}
+	}
 	ip, client := clientOf(r)
 	now := h.now()
 
@@ -199,7 +217,25 @@ func (h *Handler) status(w http.ResponseWriter) {
 		writeError(w, http.StatusInternalServerError, "error", "something went wrong on the server")
 		return
 	}
-	writeJSON(w, http.StatusOK, statusResponse{Available: enabled && active < max, Active: active, Max: max})
+	resp := statusResponse{Active: active, Max: max}
+	over := false
+	if h.Budget != nil {
+		u := h.Budget()
+		over = u.Exceeded()
+		resp.MonthSentBytes, resp.MonthCapBytes = u.SentBytes, u.CapBytes
+		resp.ResetsAt = u.ResetsAt.Format(time.RFC3339)
+	}
+	switch {
+	case !enabled:
+		resp.Reason = "disabled"
+	case over:
+		resp.Reason = "budget"
+	case active >= max:
+		resp.Reason = "full"
+	default:
+		resp.Available = true
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) release(client string, t time.Time) {

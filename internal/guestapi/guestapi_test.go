@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vhittuvalli/vpn/internal/accesskey"
+	"github.com/vhittuvalli/vpn/internal/budget"
 	"github.com/vhittuvalli/vpn/internal/config"
 	"github.com/vhittuvalli/vpn/internal/protocol"
 	"github.com/vhittuvalli/vpn/internal/registry"
@@ -116,7 +117,7 @@ func TestIssueKey(t *testing.T) {
 }
 
 func TestPerIPLimit(t *testing.T) {
-	fx := newFixture(t, config.GuestFile{Enabled: true, PerIPPerDay: 3})
+	fx := newFixture(t, config.GuestFile{Enabled: true, PerIPPerDay: 3, MaxActiveGuests: 10})
 	for i := range 3 {
 		if w := fx.do("POST", "/guest-key", "198.51.100.7", site, ""); w.Code != http.StatusOK {
 			t.Fatalf("key %d: %d %s", i+1, w.Code, w.Body)
@@ -144,7 +145,7 @@ func TestPerIPLimit(t *testing.T) {
 }
 
 func TestPerIPLimitGroupsIPv6(t *testing.T) {
-	fx := newFixture(t, config.GuestFile{Enabled: true, PerIPPerDay: 1})
+	fx := newFixture(t, config.GuestFile{Enabled: true, PerIPPerDay: 1, MaxActiveGuests: 10})
 	if w := fx.do("POST", "/guest-key", "2001:db8:1:2::10", site, ""); w.Code != http.StatusOK {
 		t.Fatalf("first: %d", w.Code)
 	}
@@ -192,13 +193,44 @@ func TestStatus(t *testing.T) {
 	var st statusResponse
 	w := fx.do("GET", "/guest-status", "198.51.100.9", site, "")
 	json.Unmarshal(w.Body.Bytes(), &st)
-	if w.Code != http.StatusOK || st != (statusResponse{Available: true, Active: 1, Max: 2}) {
+	if w.Code != http.StatusOK || st != (statusResponse{Available: true, Active: 1, Max: 2}) { // no Budget set
 		t.Fatalf("%d %+v", w.Code, st)
 	}
 	fx.do("POST", "/guest-key", "198.51.100.2", site, "")
 	json.Unmarshal(fx.do("GET", "/guest-status", "198.51.100.9", site, "").Body.Bytes(), &st)
-	if st.Available || st.Active != 2 {
+	if st.Available || st.Active != 2 || st.Reason != "full" {
 		t.Fatalf("full: %+v", st)
+	}
+}
+
+func TestMonthlyCap(t *testing.T) {
+	fx := newFixture(t, config.GuestFile{Enabled: true, MaxActiveGuests: 3})
+	usage := budget.Usage{SentBytes: 100 << 30, CapBytes: 450 << 30, ResetsAt: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), Known: true}
+	fx.h.Budget = func() budget.Usage { return usage }
+
+	var st statusResponse
+	json.Unmarshal(fx.do("GET", "/guest-status", "198.51.100.9", site, "").Body.Bytes(), &st)
+	if !st.Available || st.MonthSentBytes != 100<<30 || st.MonthCapBytes != 450<<30 || st.ResetsAt != "2026-12-01T00:00:00Z" {
+		t.Fatalf("status under the cap: %+v", st)
+	}
+	if w := fx.do("POST", "/guest-key", "198.51.100.7", site, ""); w.Code != http.StatusOK {
+		t.Fatalf("under the cap: %d", w.Code)
+	}
+
+	usage.SentBytes = 450 << 30
+	w := fx.do("POST", "/guest-key", "198.51.100.8", site, "")
+	if w.Code != http.StatusServiceUnavailable || code(t, w) != "budget" || !strings.Contains(w.Body.String(), "December 1") {
+		t.Fatalf("at the cap: %d %s", w.Code, w.Body)
+	}
+	json.Unmarshal(fx.do("GET", "/guest-status", "198.51.100.9", site, "").Body.Bytes(), &st)
+	if st.Available || st.Reason != "budget" {
+		t.Fatalf("status at the cap: %+v", st)
+	}
+
+	// Unknown usage (the meter can't read the counter) counts as over.
+	usage = budget.Usage{CapBytes: 450 << 30, Known: false}
+	if w := fx.do("POST", "/guest-key", "198.51.100.10", site, ""); code(t, w) != "budget" {
+		t.Fatalf("unknown usage: %d %s", w.Code, w.Body)
 	}
 }
 
