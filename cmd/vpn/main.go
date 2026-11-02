@@ -221,20 +221,31 @@ func runServer(args []string) error {
 	}()
 	defer srv.WriteStatus(status)
 
-	// `vpn invite` and `vpn revoke` edit the config and send SIGHUP; only
-	// the device list is reloaded, without dropping anyone else.
+	// Guest access: the key endpoint (when enabled) and the sweep that
+	// removes guests whose time or data has run out.
+	state := newServerState(path, srv, cfg)
+	defer state.close()
+	go func() {
+		t := time.NewTicker(guestSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				state.sweep(now)
+			}
+		}
+	}()
+
+	// `vpn invite`, `vpn revoke` and `vpn guests` edit the config and send
+	// SIGHUP; the device list is reloaded without dropping anyone else.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	go func() {
 		for range hup {
-			next, err := config.LoadServer(path)
-			if err != nil {
-				log.Printf("reload: %v (keeping the current devices)", err)
-				continue
-			}
-			added, removed := srv.SetPeers(next.Peers)
-			log.Printf("reloaded devices: %d total, %d added, %d removed", len(next.Peers), added, removed)
+			state.reload("SIGHUP")
 		}
 	}()
 
