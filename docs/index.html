@@ -99,6 +99,10 @@ footer p { margin: 0; }
 #guest-result { margin-top: 1rem; }
 #guest-result pre code { word-break: break-all; white-space: pre-wrap; }
 #guest-error { margin-top: 0.75rem; color: var(--text); }
+#guest-usage { margin-top: 0.9rem; max-width: 22rem; }
+#guest-usage .meter { height: 6px; border-radius: 3px; background: var(--code-bg); overflow: hidden; }
+#guest-usage .meter span { display: block; height: 100%; width: 0; background: var(--button); border-radius: 3px; }
+#guest-usage small { display: block; margin-top: 0.35rem; font-size: 0.85rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -120,11 +124,15 @@ footer p { margin: 0; }
   <p>There's no company and no account. You (or a friend) run the server, and every device gets its own access key.</p>
 
   <h2 id="try">Try it free for an hour</h2>
-  <p>No server? Borrow mine. Get a guest key here, then paste it into the app (or <code>sudo vpn connect</code> on Linux). It works for one hour or 500 MB, whichever comes first.</p>
+  <p>No server? Borrow mine. Get a guest key here, then paste it into the app (or <code>sudo vpn connect</code> on Linux). It works for one hour or 500 MB, whichever comes first. The demo has a fixed bandwidth budget each month; when it's used up, guest keys pause until the next month.</p>
   <div class="try">
     <div class="try-row">
       <button class="button" id="guest-btn" type="button">Get a guest key</button>
       <span id="guest-slots"></span>
+    </div>
+    <div id="guest-usage" hidden>
+      <div class="meter" role="progressbar" aria-label="Demo bandwidth used this month" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+      <small id="guest-usage-text"></small>
     </div>
     <div id="guest-result" hidden>
       <div class="code"><button class="copy" type="button" data-copy="guest-key">Copy</button><pre><code id="guest-key"></code></pre></div>
@@ -209,15 +217,43 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
     errorBox.hidden = false;
   }
 
+  var resetsAt = null;
+
+  function gib(bytes) {
+    var g = bytes / 1073741824;
+    return (g >= 10 || g === Math.round(g) ? Math.round(g) : g.toFixed(1));
+  }
+
+  function day(iso) {
+    return new Date(iso).toLocaleDateString([], { month: "long", day: "numeric", timeZone: "UTC" });
+  }
+
   function refreshSlots() {
     if (!window.fetch) return;
     fetch(API + "/guest-status")
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (st) {
-        if (!st.max) { slots.textContent = ""; return; }
-        slots.textContent = st.available
-          ? (st.max - st.active) + " of " + st.max + " guest spots free"
-          : "All guest spots are taken right now";
+        if (st.resets_at) resetsAt = st.resets_at;
+        if (st.available) {
+          slots.textContent = (st.max - st.active) + " of " + st.max + " guest spots free";
+        } else if (st.reason === "budget") {
+          slots.textContent = "This month's demo bandwidth is used up; back on " + day(st.resets_at);
+          btn.disabled = true;
+        } else if (st.reason === "disabled") {
+          slots.textContent = "Guest keys are switched off right now";
+          btn.disabled = true;
+        } else {
+          slots.textContent = "All guest spots are taken right now";
+        }
+        if (st.month_cap_bytes) {
+          var pct = Math.min(100, st.month_sent_bytes / st.month_cap_bytes * 100);
+          var usage = document.getElementById("guest-usage");
+          usage.querySelector(".meter span").style.width = pct.toFixed(1) + "%";
+          usage.querySelector(".meter").setAttribute("aria-valuenow", Math.round(pct));
+          document.getElementById("guest-usage-text").textContent =
+            gib(st.month_sent_bytes) + " of " + gib(st.month_cap_bytes) + " GiB of this month's demo bandwidth used";
+          usage.hidden = false;
+        }
       })
       .catch(function () { slots.textContent = ""; });
   }
@@ -249,6 +285,8 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
           showError("You've already had today's guest keys. Try again tomorrow, or run your own server below.");
         } else if (code === "full") {
           showError("All the guest spots are taken right now. Try again in a few minutes.");
+        } else if (code === "budget") {
+          showError("This month's demo bandwidth is used up" + (resetsAt ? ". Guest keys come back on " + day(resetsAt) + "." : ". Guest keys come back next month."));
         } else if (code === "disabled") {
           showError("Guest keys are switched off at the moment. You can still run your own server below.");
         } else if (code === "busy") {
