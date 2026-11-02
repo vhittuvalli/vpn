@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VPN for Mac</title>
-<meta name="description" content="A menu bar VPN for the Mac with post-quantum encryption, connecting to a server you run yourself.">
+<meta name="description" content="A VPN for Mac and Windows with post-quantum encryption, connecting to a server you run yourself.">
 <link rel="icon" type="image/png" href="favicon.png">
 <link rel="apple-touch-icon" href="icon.png">
 <style>
@@ -104,8 +104,8 @@ footer p { margin: 0; }
 .after ol { margin: 0.6rem 0 0; }
 .after li { margin-bottom: 0.6rem; }
 .after li:last-child { margin-bottom: 0; }
-.after .linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
-.after .linkish:hover { text-decoration: underline; }
+.linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
 #guest-usage { margin-top: 0.9rem; max-width: 22rem; }
 #guest-usage .meter { height: 6px; border-radius: 3px; background: var(--code-bg); overflow: hidden; }
 #guest-usage .meter span { display: block; height: 100%; width: 0; background: var(--button); border-radius: 3px; }
@@ -118,21 +118,26 @@ footer p { margin: 0; }
     <img src="icon.png" alt="">
     <div>
       <h1>VPN</h1>
-      <p>A menu bar VPN for the Mac, with post-quantum encryption, that connects to a server you run yourself.</p>
+      <p>A VPN for Mac and Windows, with post-quantum encryption, that connects to a server you run yourself.</p>
     </div>
   </header>
 
   <div class="download">
     <a class="button" id="dl" href="https://github.com/vhittuvalli/vpn/releases/latest">Download for Mac</a>
-    <p id="dl-info">Version 0.2.2 · macOS 12 or later · Apple silicon and Intel. On Linux? <a href="#linux">Use the command line version.</a></p>
+    <p id="dl-info"><span id="dl-text">macOS 12 or later · Apple silicon and Intel.</span> Also for <button class="linkish" id="dl-switch" type="button">Windows</button>. On Linux? <a href="#linux">Use the command line version.</a></p>
   </div>
 
   <div class="after" id="after-download" tabindex="-1" hidden>
     <strong>Your download has started.</strong> Three steps from here:
-    <ol>
+    <ol id="after-mac">
       <li>Open <code id="dmg-name">VPN.dmg</code> from your Downloads folder and drag VPN into Applications.</li>
       <li>Open VPN. Because it isn't signed by Apple, macOS says it can't verify it; click <strong>Done</strong>. Then open System Settings → Privacy &amp; Security, scroll down to the message that VPN was blocked, and click <strong>Open Anyway</strong>. After that, VPN asks for your password once to set up the part that manages your connection.</li>
-      <li>Paste an access key when it asks. Don't have one? <button class="linkish" id="after-guest" type="button">Get a free guest key</button> that works for an hour.</li>
+      <li>Paste an access key when it asks. Don't have one? <button class="linkish after-guest" type="button">Get a free guest key</button> that works for an hour.</li>
+    </ol>
+    <ol id="after-windows" hidden>
+      <li>Open <code id="zip-name">VPN-windows-x64.zip</code> from your Downloads folder and drag the VPN folder out of it, for example into Documents. Windows can't run it from inside the zip.</li>
+      <li>Double-click <code>VPN.exe</code> in that folder. Because it isn't code-signed, Windows may say it protected your PC; click <strong>More info</strong>, then <strong>Run anyway</strong>. Then click <strong>Yes</strong> when Windows asks to allow changes, so VPN can set up the part that manages your connection.</li>
+      <li>Paste an access key when it asks. Don't have one? <button class="linkish after-guest" type="button">Get a free guest key</button> that works for an hour. The VPN then lives in the system tray, next to the clock.</li>
     </ol>
   </div>
 
@@ -158,13 +163,16 @@ footer p { margin: 0; }
   </div>
   <p class="muted">This is a demo server, so a few things to know. Your traffic leaves from my server in Bangalore, India, so websites will see an Indian IP address. Guests get about 5 Mbit/s, and outgoing email (port 25) is blocked. The server records when each guest key was issued and the IP address that asked for it, and while a key exists, when it connects and how much data it has used. It doesn't log which sites you visit.</p>
 
-  <h2>Getting set up</h2>
+  <h2>Getting set up on a Mac</h2>
   <ol>
     <li>Open <code>VPN.dmg</code> and drag VPN into Applications.</li>
     <li>Open it. The app isn't signed by Apple, so macOS won't open it the first time. Go to System Settings → Privacy &amp; Security and click <strong>Open Anyway</strong>. VPN then asks for your password once, to install the part that manages your network connection.</li>
     <li>Paste your access key. After that it's the shield in your menu bar.</li>
   </ol>
   <p class="muted">Don't have a key? Someone running a server can make you one, or you can <a href="#server">run your own</a>.</p>
+
+  <h2 id="windows">On Windows</h2>
+  <p>Windows 10 or 11. Unzip the download, double-click <code>VPN.exe</code>, get past SmartScreen with <strong>More info → Run anyway</strong>, allow the prompt to make changes, and paste your key. It works like the Mac app, from the system tray. For now on Windows, the kill switch is always on, so your local network (printers, file shares) isn't reachable while you're connected, and trusted networks are Mac only. To remove it, run <code>VPN.exe uninstall</code> from an administrator terminal.</p>
 
   <h2>What's in the menu</h2>
   <ul>
@@ -196,7 +204,7 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
   <ul>
     <li>Nobody has audited this. I've tested and fuzzed it, but if you need privacy you can stake something on, use WireGuard or a VPN that has had a proper audit.</li>
     <li>Websites see your server's IP instead of yours, but that IP leads back to whoever pays for the server.</li>
-    <li>One server means one location. Mac and Linux only for now, no phone apps yet.</li>
+    <li>One server means one location. Mac, Windows and Linux for now, no phone apps yet.</li>
   </ul>
   <p>The <a href="https://github.com/vhittuvalli/vpn#how-it-works">README</a> goes through how the protocol works, step by step.</p>
 
@@ -329,24 +337,53 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
       after.focus();
     }, 300);
   });
-  document.getElementById("after-guest").addEventListener("click", function () {
-    location.hash = "try";
-    var b = document.getElementById("guest-btn");
-    if (!b.disabled) b.click();
+  document.querySelectorAll(".after-guest").forEach(function (b) {
+    b.addEventListener("click", function () {
+      location.hash = "try";
+      var g = document.getElementById("guest-btn");
+      if (!g.disabled) g.click();
+    });
   });
-  var info = document.getElementById("dl-info");
+
+  // Offer the download for the visitor's system; the other is one click away.
+  var platform = /Windows/i.test(((navigator.userAgentData && navigator.userAgentData.platform) || "") + " " + navigator.userAgent) ? "windows" : "mac";
+  var release = null;
+  function asset(re) {
+    return release && (release.assets || []).filter(function (a) { return re.test(a.name); })[0];
+  }
+  function mb(a) { return (a.size / 1048576).toFixed(1) + " MB"; }
+  function showPlatform() {
+    var win = platform === "windows";
+    var ver = release ? "Version " + release.tag_name.replace(/^v/, "") + " · " : "";
+    var file = asset(win ? /windows-x64\.zip$/ : /\.dmg$/);
+    dl.textContent = win ? "Download for Windows" : "Download for Mac";
+    dl.href = file ? file.browser_download_url : "https://github.com/vhittuvalli/vpn/releases/latest";
+    var text = document.getElementById("dl-text");
+    text.textContent = ver + (file ? mb(file) + " · " : "") +
+      (win ? "Windows 10 or 11 · 64-bit. " : "macOS 12 or later · Apple silicon and Intel. ");
+    var arm = win && asset(/windows-arm64\.zip$/);
+    if (arm) {
+      var a = document.createElement("a");
+      a.href = arm.browser_download_url;
+      a.textContent = "ARM version";
+      text.append("On an ARM PC? Get the ", a, ".");
+    }
+    document.getElementById("dl-switch").textContent = win ? "Mac" : "Windows";
+    document.getElementById("after-mac").hidden = win;
+    document.getElementById("after-windows").hidden = !win;
+    if (file && !win) document.getElementById("dmg-name").textContent = file.name;
+    if (file && win) document.getElementById("zip-name").textContent = file.name;
+  }
+  document.getElementById("dl-switch").addEventListener("click", function () {
+    platform = platform === "windows" ? "mac" : "windows";
+    showPlatform();
+  });
+  showPlatform();
 
   if (window.fetch) {
     fetch("https://api.github.com/repos/vhittuvalli/vpn/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (rel) {
-        var dmg = (rel.assets || []).filter(function (a) { return /\.dmg$/.test(a.name); })[0];
-        if (!dmg) return;
-        dl.href = dmg.browser_download_url;
-        document.getElementById("dmg-name").textContent = dmg.name;
-        info.firstChild.textContent = "Version " + rel.tag_name.replace(/^v/, "") + " · " +
-          (dmg.size / 1048576).toFixed(1) + " MB · macOS 12 or later · Apple silicon and Intel. On Linux? ";
-      })
+      .then(function (rel) { release = rel; showPlatform(); })
       .catch(function () {});
   }
 
