@@ -222,7 +222,7 @@ without you running `vpn invite`. It's off by default.
 
 ```bash
 sudo vpn guests on       # start handing out keys (opens TCP 443 if ufw is on)
-sudo vpn guests          # is it on, and how many guests are active
+sudo vpn guests          # is it on, guests active, this month's usage, keys handed out
 sudo vpn devices         # guests show their time left and data used
 sudo vpn guests off      # stop handing out keys; current guests run out their time
 sudo vpn guests purge    # remove every guest right now
@@ -234,7 +234,7 @@ using UDP 51820 and UDP 443):
 | request | answer |
 | --- | --- |
 | `POST /guest-key` | `{"key": "vpn://...", "expires_at": "...", "quota_bytes": 500000000}` |
-| `GET /guest-status` | `{"available": true, "active": 3, "max": 20}` |
+| `GET /guest-status` | `{"available": true, "active": 1, "max": 3, "month_sent_bytes": ..., "month_cap_bytes": ..., "resets_at": "..."}` |
 
 It gets a real certificate from Let's Encrypt for `guest_hostname`, which
 checks that you control the name over the same port, so **TCP 443 must be
@@ -250,9 +250,10 @@ Settings go in a `guests` section of `server.json`; everything is optional:
   "enabled": true,
   "ttl": "1h",
   "quota_bytes": 500000000,
-  "max_active_guests": 20,
+  "max_active_guests": 3,
   "per_ip_per_day": 3,
   "rate_limit_mbps": 5,
+  "monthly_cap_bytes": 483183820800,
   "guest_hostname": "139.59.79.156.sslip.io",
   "allowed_origins": ["https://vhittuvalli.github.io"]
 }
@@ -263,11 +264,42 @@ Settings go in a `guests` section of `server.json`; everything is optional:
 | `enabled` | `false` | Hand out keys. `vpn guests on/off` sets this. |
 | `ttl` | `1h` | How long a key works. |
 | `quota_bytes` | 500 MB | Data a guest may use, both directions together. |
-| `max_active_guests` | 20 | Guests at once; more get `503`. |
+| `max_active_guests` | 3 | Guests at once; more get `503`. |
 | `per_ip_per_day` | 3 | Keys per visitor IP (IPv6: per /64) in 24 hours; more get `429`. |
 | `rate_limit_mbps` | 5 | Bandwidth per guest, both directions together. `0` turns it off. |
+| `monthly_cap_bytes` | 450 GiB | Everything the server sends in a calendar month (UTC), guests and your own devices together. Reaching it cuts guests off until next month. |
 | `guest_hostname` | `<IP>.sslip.io` | The endpoint's public name, for its certificate. |
 | `allowed_origins` | the project site | Web pages allowed to call the endpoint. If the site moves to its own domain, add it here. |
+
+**The monthly cap keeps guests from ever costing you money.** A $4
+DigitalOcean droplet includes 500 GiB of outbound transfer a month and
+charges $0.01 per GiB past that (inbound is free). `vpn server` reads the
+internet interface's byte counter every 30 seconds, adds it up per calendar
+month (UTC) in `/etc/vpn/usage.json` so restarts and reboots don't lose it,
+and when the month reaches the cap (450 GiB by default) it cuts every guest off
+and stops handing out keys until the 1st. Your own devices keep working, with
+the last 50 GiB as headroom. If the counter can't be read, guests stay off,
+so a broken meter can't cost money either. Things to know:
+
+- It counts the whole server, so your own heavy use brings the cut-off
+  sooner for guests, never for you.
+- DigitalOcean pools the allowance across all droplets on your team; if you
+  run others, lower the cap by what they use.
+- The first time it runs, it can't tell how much of the counter (everything
+  since the last reboot) was this month, so it counts all of it. That
+  overcounts, which is the safe direction.
+
+`sudo vpn guests` shows the month so far, for example:
+
+```
+Guest access is on. 1 of 3 guest slots in use.
+
+Sent this November: 11.5 GiB of the 450 GiB cap (3%), all devices and guests.
+Resets December 1. Guests are cut off if it reaches the cap.
+Guest keys handed out: 14 this month, 2 today.
+```
+
+The download page shows the same monthly figure as a bar under the button.
 
 How the limits work:
 
