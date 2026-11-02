@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VPN for Mac</title>
+<title>VPN for Mac and Windows</title>
 <meta name="description" content="A VPN for Mac and Windows with post-quantum encryption, connecting to a server you run yourself.">
 <link rel="icon" type="image/png" href="favicon.png">
 <link rel="apple-touch-icon" href="icon.png">
@@ -39,77 +39,44 @@ body {
   font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-main { max-width: 40rem; margin: 0 auto; padding-inline: 1.25rem; padding-block: 3rem 4rem; }
+main { max-width: 38rem; margin: 0 auto; padding-inline: 1.25rem; padding-block: 3.5rem 4rem; }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 3px; }
-h1 { font-size: 2rem; line-height: 1.15; letter-spacing: -0.01em; margin: 0; }
-h2 { font-size: 1.3rem; line-height: 1.3; margin: 2.75rem 0 0.6rem; }
-p, ul, ol { margin: 0 0 1rem; }
-ul, ol { padding-left: 1.3rem; }
-li { margin-bottom: 0.4rem; }
+h1 { font-size: 2rem; line-height: 1.15; margin: 0; }
+h2 { font-size: 1.2rem; margin: 2.5rem 0 0.75rem; }
+p, ul { margin: 0 0 1rem; }
+ul { padding-left: 1.3rem; }
+li { margin-bottom: 0.45rem; }
 li::marker { color: var(--muted); }
-code { font: 0.85em/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
-:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
-.muted { color: var(--muted); }
+code { font: 0.85em/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+.muted { color: var(--muted); font-size: 0.9rem; }
 
-header { display: flex; align-items: center; gap: 1.1rem; margin-bottom: 1.5rem; }
-header img { width: 80px; height: 80px; flex: none; }
-header p { margin: 0.25rem 0 0; color: var(--muted); }
+header { display: flex; align-items: center; gap: 1rem; }
+header img { width: 72px; height: 72px; flex: none; }
+header p { margin: 0.2rem 0 0; color: var(--muted); }
 
-.download { margin: 1.75rem 0 2rem; }
+.downloads { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 2rem 0 0.75rem; }
 .button {
   display: inline-block; background: var(--button); color: var(--button-text);
-  font-weight: 600; padding: 0.6rem 1.15rem; border-radius: 980px;
+  font-weight: 600; padding: 0.7rem 1.2rem; border-radius: 980px;
 }
 .button:hover { background: var(--button-hover); text-decoration: none; }
-.download p { margin: 0.6rem 0 0; font-size: 0.9rem; color: var(--muted); }
+.button small { font-weight: 400; opacity: 0.85; margin-left: 0.35rem; }
+.linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
+.linkish:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 
-.code { display: flex; flex-direction: column; margin: 0 0 1rem; min-width: 0; }
-pre {
-  background: var(--code-bg); border-radius: 8px;
-  padding: 0.85rem 1rem; margin: 0; overflow-x: auto;
-}
-pre code { font-size: 0.85rem; }
-.copy {
-  align-self: flex-end; margin: 0 0 0.25rem;
-  font: 0.8rem -apple-system, BlinkMacSystemFont, sans-serif; color: var(--link);
-  background: none; border: 0; padding: 0; cursor: pointer;
-}
-.copy:hover { text-decoration: underline; }
+#guest-result { margin-top: 0.75rem; }
+#guest-key { display: block; padding: 0.75rem 1rem; border-radius: 8px; word-break: break-all; white-space: pre-wrap; }
 
-.changes { margin: 0; }
-.changes dt { font-weight: 600; margin-top: 1rem; }
-.changes dt span { font-weight: 400; color: var(--muted); }
-.changes dd { margin: 0.2rem 0 0; }
-
-footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); font-size: 0.9rem; color: var(--muted); }
-footer p { margin: 0; }
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); font-size: 0.9rem; color: var(--muted); }
 
 @media (max-width: 30rem) {
   main { padding-block: 2rem 3rem; }
-  header img { width: 64px; height: 64px; }
-  h1 { font-size: 1.7rem; }
+  header img { width: 56px; height: 56px; }
+  .button { width: 100%; text-align: center; }
 }
-.try { margin: 1rem 0 0; }
-.try-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
-.try-row .button { border: 0; cursor: pointer; font: inherit; font-weight: 600; }
-.try-row .button:disabled { opacity: 0.6; cursor: default; }
-#guest-slots { font-size: 0.9rem; color: var(--muted); }
-#guest-result { margin-top: 1rem; }
-#guest-result pre code { word-break: break-all; white-space: pre-wrap; }
-#guest-error { margin-top: 0.75rem; color: var(--text); }
-.after { margin: -0.75rem 0 2rem; padding: 1rem 1.25rem; border: 1px solid var(--rule); border-radius: 10px; }
-.after:focus { outline: none; }
-.after ol { margin: 0.6rem 0 0; }
-.after li { margin-bottom: 0.6rem; }
-.after li:last-child { margin-bottom: 0; }
-.linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
-.linkish:hover { text-decoration: underline; }
-#guest-usage { margin-top: 0.9rem; max-width: 22rem; }
-#guest-usage .meter { height: 6px; border-radius: 3px; background: var(--code-bg); overflow: hidden; }
-#guest-usage .meter span { display: block; height: 100%; width: 0; background: var(--button); border-radius: 3px; }
-#guest-usage small { display: block; margin-top: 0.35rem; font-size: 0.85rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -118,172 +85,64 @@ footer p { margin: 0; }
     <img src="icon.png" alt="">
     <div>
       <h1>VPN</h1>
-      <p>A VPN for Mac and Windows, with post-quantum encryption, that connects to a server you run yourself.</p>
+      <p>Post-quantum VPN for Mac and Windows.</p>
     </div>
   </header>
 
-  <div class="download">
-    <a class="button" id="dl" href="https://github.com/vhittuvalli/vpn/releases/latest">Download for Mac</a>
-    <p id="dl-info"><span id="dl-text">macOS 12 or later · Apple silicon and Intel.</span> Also for <button class="linkish" id="dl-switch" type="button">Windows</button>. On Linux? <a href="#linux">Use the command line version.</a></p>
+  <div class="downloads">
+    <a class="button" id="dl-mac" href="https://github.com/vhittuvalli/vpn/releases/latest">Download for Mac<small id="size-mac"></small></a>
+    <a class="button" id="dl-win" href="https://github.com/vhittuvalli/vpn/releases/latest">Download for Windows<small id="size-win"></small></a>
   </div>
+  <p class="muted"><span id="version"></span>macOS 12+ (Apple silicon and Intel) · Windows 10 or 11 (<a id="dl-arm" href="https://github.com/vhittuvalli/vpn/releases/latest">ARM version</a>) · <a href="https://github.com/vhittuvalli/vpn#connect-from-linux">Linux</a></p>
+  <p class="muted">The apps aren't signed. On a Mac, open it, then click <strong>Open Anyway</strong> in System Settings → Privacy &amp; Security. On Windows, unzip it, run <code>VPN.exe</code>, and click <strong>More info → Run anyway</strong>.</p>
 
-  <div class="after" id="after-download" tabindex="-1" hidden>
-    <strong>Your download has started.</strong> Three steps from here:
-    <ol id="after-mac">
-      <li>Open <code id="dmg-name">VPN.dmg</code> from your Downloads folder and drag VPN into Applications.</li>
-      <li>Open VPN. Because it isn't signed by Apple, macOS says it can't verify it; click <strong>Done</strong>. Then open System Settings → Privacy &amp; Security, scroll down to the message that VPN was blocked, and click <strong>Open Anyway</strong>. After that, VPN asks for your password once to set up the part that manages your connection.</li>
-      <li>Paste an access key when it asks. Don't have one? <button class="linkish after-guest" type="button">Get a free guest key</button> that works for an hour.</li>
-    </ol>
-    <ol id="after-windows" hidden>
-      <li>Open <code id="zip-name">VPN-windows-x64.zip</code> from your Downloads folder and drag the VPN folder out of it, for example into Documents. Windows can't run it from inside the zip.</li>
-      <li>Double-click <code>VPN.exe</code> in that folder. Because it isn't code-signed, Windows may say it protected your PC; click <strong>More info</strong>, then <strong>Run anyway</strong>. Then click <strong>Yes</strong> when Windows asks to allow changes, so VPN can set up the part that manages your connection.</li>
-      <li>Paste an access key when it asks. Don't have one? <button class="linkish after-guest" type="button">Get a free guest key</button> that works for an hour. The VPN then lives in the system tray, next to the clock.</li>
-    </ol>
+  <p id="try">Need an access key? <button class="linkish" id="guest-btn" type="button">Get a free one-hour key</button> for the demo server.</p>
+  <div id="guest-result" hidden>
+    <code id="guest-key"></code>
+    <p class="muted"><button class="linkish" id="guest-copy" type="button">Copy</button> · <span id="guest-meta"></span></p>
   </div>
+  <p id="guest-error" class="muted" role="status" hidden></p>
+  <p class="muted">Demo keys last one hour or 500 MB. Traffic leaves from my server in India; it logs when each key was issued and to which IP, not which sites you visit.</p>
 
-  <p>I built this to learn how VPNs actually work. It started as a command line tool and turned into a small Mac app. The encryption follows WireGuard's design, with ML-KEM and ML-DSA layered on top, so traffic recorded today should stay private even once someone has a quantum computer.</p>
-  <p>There's no company and no account. You (or a friend) run the server, and every device gets its own access key.</p>
-
-  <h2 id="try">Try it free for an hour</h2>
-  <p>No server? Borrow mine. Get a guest key here, then paste it into the app (or <code>sudo vpn connect</code> on Linux). It works for one hour or 500 MB, whichever comes first. The demo has a fixed bandwidth budget each month; when it's used up, guest keys pause until the next month.</p>
-  <div class="try">
-    <div class="try-row">
-      <button class="button" id="guest-btn" type="button">Get a guest key</button>
-      <span id="guest-slots"></span>
-    </div>
-    <div id="guest-usage" hidden>
-      <div class="meter" role="progressbar" aria-label="Demo bandwidth used this month" aria-valuemin="0" aria-valuemax="100"><span></span></div>
-      <small id="guest-usage-text"></small>
-    </div>
-    <div id="guest-result" hidden>
-      <div class="code"><button class="copy" type="button" data-copy="guest-key">Copy</button><pre><code id="guest-key"></code></pre></div>
-      <p id="guest-meta" class="muted"></p>
-    </div>
-    <p id="guest-error" role="status" hidden></p>
-  </div>
-  <p class="muted">This is a demo server, so a few things to know. Your traffic leaves from my server in Bangalore, India, so websites will see an Indian IP address. Guests get about 5 Mbit/s, and outgoing email (port 25) is blocked. The server records when each guest key was issued and the IP address that asked for it, and while a key exists, when it connects and how much data it has used. It doesn't log which sites you visit.</p>
-
-  <h2>Getting set up on a Mac</h2>
-  <ol>
-    <li>Open <code>VPN.dmg</code> and drag VPN into Applications.</li>
-    <li>Open it. The app isn't signed by Apple, so macOS won't open it the first time. Go to System Settings → Privacy &amp; Security and click <strong>Open Anyway</strong>. VPN then asks for your password once, to install the part that manages your network connection.</li>
-    <li>Paste your access key. After that it's the shield in your menu bar.</li>
-  </ol>
-  <p class="muted">Don't have a key? Someone running a server can make you one, or you can <a href="#server">run your own</a>.</p>
-
-  <h2 id="windows">On Windows</h2>
-  <p>Windows 10 or 11. Unzip the download, double-click <code>VPN.exe</code>, get past SmartScreen with <strong>More info → Run anyway</strong>, allow the prompt to make changes, and paste your key. It works like the Mac app, from the system tray. For now on Windows, the kill switch is always on, so your local network (printers, file shares) isn't reachable while you're connected, and trusted networks are Mac only. To remove it, run <code>VPN.exe uninstall</code> from an administrator terminal.</p>
-
-  <h2>What's in the menu</h2>
+  <h2>What it does</h2>
   <ul>
-    <li>Turn it on and off, and see how long you've been connected, data each way, and ping.</li>
-    <li><strong>Block internet if the VPN drops.</strong> On by default, so nothing slips out if the connection breaks.</li>
-    <li><strong>Allow local network.</strong> Printers, AirDrop and your router keep working while you're connected.</li>
-    <li><strong>Disguise as web traffic.</strong> For networks that block VPNs. The tunnel runs inside HTTP/3 on port 443.</li>
-    <li><strong>Trust This Network.</strong> The VPN pauses on networks you trust, like home, and turns back on everywhere else.</li>
-    <li>A note in the menu when there's an update.</li>
+    <li><strong>Post-quantum encryption.</strong> ML-KEM-768 and ML-DSA-44 on top of X25519, in a WireGuard-style protocol.</li>
+    <li><strong>On and off from the menu bar or system tray,</strong> with time connected, data used and ping.</li>
+    <li><strong>Kill switch.</strong> Blocks all traffic outside the tunnel if the connection drops. Always on, on Windows.</li>
+    <li><strong>Disguise as web traffic.</strong> Tunnels over HTTPS on port 443 for networks that block VPNs.</li>
+    <li><strong>Allow local network</strong> (Mac). Printers, AirDrop and your router keep working.</li>
+    <li><strong>Trusted networks</strong> (Mac). Pauses on networks you trust and reconnects everywhere else.</li>
+    <li><strong>Your own server.</strong> On Linux, <code>sudo vpn setup</code> prints an access key; <code>sudo vpn invite NAME</code> adds people.</li>
   </ul>
-  <p>If it was on when you shut down, it reconnects on its own after you restart.</p>
 
-  <h2 id="server">Running a server</h2>
-  <p>Any small Linux server with a public IP works. I use the cheapest DigitalOcean droplet. SSH in and run:</p>
-<div class="code"><button class="copy" type="button" data-copy="c1">Copy</button><pre><code id="c1">curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
-sudo vpn setup</code></pre></div>
-  <p>That prints your first access key. To give someone else access, or take it away:</p>
-<div class="code"><button class="copy" type="button" data-copy="c2">Copy</button><pre><code id="c2">sudo vpn invite alex      # prints a key for Alex
-sudo vpn devices          # who's online and how much data they've used
-sudo vpn revoke alex      # Alex's key stops working right away</code></pre></div>
-  <p>Devices can reach the internet through your server, but not each other. If your host has its own firewall, open UDP ports 51820 and 443.</p>
-
-  <h2 id="linux">Linux</h2>
-  <p>There's no menu bar app for Linux yet. Install the command line version and connect with your key; Ctrl-C disconnects.</p>
-<div class="code"><button class="copy" type="button" data-copy="c3">Copy</button><pre><code id="c3">curl -fsSL https://raw.githubusercontent.com/vhittuvalli/vpn/main/install.sh | sh
-sudo vpn connect vpn://your-access-key</code></pre></div>
-
-  <h2>Things to know</h2>
-  <ul>
-    <li>Nobody has audited this. I've tested and fuzzed it, but if you need privacy you can stake something on, use WireGuard or a VPN that has had a proper audit.</li>
-    <li>Websites see your server's IP instead of yours, but that IP leads back to whoever pays for the server.</li>
-    <li>One server means one location. Mac, Windows and Linux for now, no phone apps yet.</li>
-  </ul>
-  <p>The <a href="https://github.com/vhittuvalli/vpn#how-it-works">README</a> goes through how the protocol works, step by step.</p>
-
-  <h2>Changes</h2>
-  <dl class="changes">
-    <dt>0.2.2 <span>· October 20, 2026</span></dt>
-    <dd>Trusted networks. IPv6 no longer leaks around the VPN when the kill switch is off. Devices on the same server can't reach each other anymore.</dd>
-    <dt>0.2.1 <span>· October 20, 2026</span></dt>
-    <dd>Allow local network. You can SSH into your own server while connected. Connection time, data and ping in the menu. Update notices. <code>vpn devices</code> shows who's online.</dd>
-    <dt>0.2.0 <span>· October 15, 2026</span></dt>
-    <dd>The Mac app. Access keys, and <code>vpn setup</code>, <code>invite</code> and <code>revoke</code> for servers.</dd>
-    <dt>0.1.1 <span>· October 15, 2026</span></dt>
-    <dd>Connected devices can no longer reach the server's private network.</dd>
-    <dt>0.1.0 <span>· October 15, 2026</span></dt>
-    <dd>First release, command line only.</dd>
-  </dl>
-
-  <footer>
-    <p>Made by Varun Hittuvalli. MIT license. <a href="https://github.com/vhittuvalli/vpn">Source on GitHub</a> · <a href="https://github.com/vhittuvalli/vpn/issues">Report a problem</a></p>
-  </footer>
+  <footer><a href="https://github.com/vhittuvalli/vpn">Source on GitHub</a></footer>
 </main>
 
 <script>
 (function () {
-  // Guest keys from the demo server.
-  var API = "https://139.59.79.156.sslip.io";
-  var btn = document.getElementById("guest-btn");
-  var slots = document.getElementById("guest-slots");
-  var result = document.getElementById("guest-result");
-  var errorBox = document.getElementById("guest-error");
+  var $ = function (id) { return document.getElementById(id); };
 
-  function showError(msg) {
-    errorBox.textContent = msg;
-    errorBox.hidden = false;
-  }
-
-  var resetsAt = null;
-
-  function gib(bytes) {
-    var g = bytes / 1073741824;
-    return (g >= 10 || g === Math.round(g) ? Math.round(g) : g.toFixed(1));
-  }
-
-  function day(iso) {
-    return new Date(iso).toLocaleDateString([], { month: "long", day: "numeric", timeZone: "UTC" });
-  }
-
-  function refreshSlots() {
-    if (!window.fetch) return;
-    fetch(API + "/guest-status")
+  // Point the buttons at the latest release's files.
+  if (window.fetch) {
+    fetch("https://api.github.com/repos/vhittuvalli/vpn/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (st) {
-        if (st.resets_at) resetsAt = st.resets_at;
-        if (st.available) {
-          slots.textContent = (st.max - st.active) + " of " + st.max + " guest spots free";
-        } else if (st.reason === "budget") {
-          slots.textContent = "This month's demo bandwidth is used up; back on " + day(st.resets_at);
-          btn.disabled = true;
-        } else if (st.reason === "disabled") {
-          slots.textContent = "Guest keys are switched off right now";
-          btn.disabled = true;
-        } else {
-          slots.textContent = "All guest spots are taken right now";
-        }
-        if (st.month_cap_bytes) {
-          var pct = Math.min(100, st.month_sent_bytes / st.month_cap_bytes * 100);
-          var usage = document.getElementById("guest-usage");
-          usage.querySelector(".meter span").style.width = pct.toFixed(1) + "%";
-          usage.querySelector(".meter").setAttribute("aria-valuenow", Math.round(pct));
-          document.getElementById("guest-usage-text").textContent =
-            gib(st.month_sent_bytes) + " of " + gib(st.month_cap_bytes) + " GiB of this month's demo bandwidth used";
-          usage.hidden = false;
-        }
+      .then(function (rel) {
+        function file(re) { return (rel.assets || []).filter(function (a) { return re.test(a.name); })[0]; }
+        function mb(a) { return (a.size / 1048576).toFixed(1) + " MB"; }
+        var mac = file(/\.dmg$/), win = file(/windows-x64\.zip$/), arm = file(/windows-arm64\.zip$/);
+        if (mac) { $("dl-mac").href = mac.browser_download_url; $("size-mac").textContent = mb(mac); }
+        if (win) { $("dl-win").href = win.browser_download_url; $("size-win").textContent = mb(win); }
+        if (arm) { $("dl-arm").href = arm.browser_download_url; }
+        $("version").textContent = "Version " + rel.tag_name.replace(/^v/, "") + " · ";
       })
-      .catch(function () { slots.textContent = ""; });
+      .catch(function () {});
   }
 
-  function mb(bytes) { return Math.round(bytes / 1e6) + " MB"; }
-
+  // Free one-hour keys from the demo server. The apps' "Get a Free Key"
+  // button opens this page at #try.
+  var API = "https://139.59.79.156.sslip.io";
+  var btn = $("guest-btn"), errorBox = $("guest-error");
+  function showError(msg) { errorBox.textContent = msg; errorBox.hidden = false; }
   btn.addEventListener("click", function () {
     btn.disabled = true;
     errorBox.hidden = true;
@@ -293,110 +152,41 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
       })
       .then(function (res) {
         if (res.status === 200 && res.body.key) {
-          document.getElementById("guest-key").textContent = res.body.key;
-          var until = new Date(res.body.expires_at);
-          document.getElementById("guest-meta").textContent =
-            "Works until " + until.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
-            " or until you've used " + mb(res.body.quota_bytes) + " of data. Treat it like a password.";
-          result.hidden = false;
-          btn.textContent = "Got it";
-          refreshSlots();
+          $("guest-key").textContent = res.body.key;
+          $("guest-meta").textContent = "works until " +
+            new Date(res.body.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
+            ". Paste it into the app.";
+          $("guest-result").hidden = false;
           return;
         }
         btn.disabled = false;
         var code = res.body.code;
-        if (res.status === 429) {
-          showError("You've already had today's guest keys. Try again tomorrow, or run your own server below.");
-        } else if (code === "full") {
-          showError("All the guest spots are taken right now. Try again in a few minutes.");
-        } else if (code === "budget") {
-          showError("This month's demo bandwidth is used up" + (resetsAt ? ". Guest keys come back on " + day(resetsAt) + "." : ". Guest keys come back next month."));
-        } else if (code === "disabled") {
-          showError("Guest keys are switched off at the moment. You can still run your own server below.");
-        } else if (code === "busy") {
-          showError("Lots of people are asking right now. Try again in a minute.");
-        } else {
-          showError("Something went wrong on the demo server. Try again in a bit.");
-        }
+        if (res.status === 429) showError("You've already had today's free keys. Try again tomorrow.");
+        else if (code === "full") showError("All the demo spots are taken right now. Try again in a few minutes.");
+        else if (code === "budget") showError("This month's demo bandwidth is used up. Free keys come back next month.");
+        else if (code === "disabled") showError("Free keys are switched off at the moment.");
+        else if (code === "busy") showError("Lots of people are asking right now. Try again in a minute.");
+        else showError("Something went wrong on the demo server. Try again in a bit.");
       })
       .catch(function () {
         btn.disabled = false;
-        showError("Couldn't reach the demo server. It may be down; try again later.");
+        showError("Couldn't reach the demo server. Try again later.");
       });
   });
-  refreshSlots();
+  if (location.hash === "#try") btn.focus();
 
-  var dl = document.getElementById("dl");
-
-  // After the click (the download itself goes ahead normally), show what
-  // to do next right under the button.
-  var after = document.getElementById("after-download");
-  dl.addEventListener("click", function () {
-    setTimeout(function () {
-      after.hidden = false;
-      after.focus();
-    }, 300);
-  });
-  document.querySelectorAll(".after-guest").forEach(function (b) {
-    b.addEventListener("click", function () {
-      location.hash = "try";
-      var g = document.getElementById("guest-btn");
-      if (!g.disabled) g.click();
-    });
-  });
-
-  // Offer the download for the visitor's system; the other is one click away.
-  var platform = /Windows/i.test(((navigator.userAgentData && navigator.userAgentData.platform) || "") + " " + navigator.userAgent) ? "windows" : "mac";
-  var release = null;
-  function asset(re) {
-    return release && (release.assets || []).filter(function (a) { return re.test(a.name); })[0];
-  }
-  function mb(a) { return (a.size / 1048576).toFixed(1) + " MB"; }
-  function showPlatform() {
-    var win = platform === "windows";
-    var ver = release ? "Version " + release.tag_name.replace(/^v/, "") + " · " : "";
-    var file = asset(win ? /windows-x64\.zip$/ : /\.dmg$/);
-    dl.textContent = win ? "Download for Windows" : "Download for Mac";
-    dl.href = file ? file.browser_download_url : "https://github.com/vhittuvalli/vpn/releases/latest";
-    var text = document.getElementById("dl-text");
-    text.textContent = ver + (file ? mb(file) + " · " : "") +
-      (win ? "Windows 10 or 11 · 64-bit. " : "macOS 12 or later · Apple silicon and Intel. ");
-    var arm = win && asset(/windows-arm64\.zip$/);
-    if (arm) {
-      var a = document.createElement("a");
-      a.href = arm.browser_download_url;
-      a.textContent = "ARM version";
-      text.append("On an ARM PC? Get the ", a, ".");
+  $("guest-copy").addEventListener("click", function () {
+    var el = $("guest-key"), b = this;
+    function select() {
+      var r = document.createRange(); r.selectNodeContents(el);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
     }
-    document.getElementById("dl-switch").textContent = win ? "Mac" : "Windows";
-    document.getElementById("after-mac").hidden = win;
-    document.getElementById("after-windows").hidden = !win;
-    if (file && !win) document.getElementById("dmg-name").textContent = file.name;
-    if (file && win) document.getElementById("zip-name").textContent = file.name;
-  }
-  document.getElementById("dl-switch").addEventListener("click", function () {
-    platform = platform === "windows" ? "mac" : "windows";
-    showPlatform();
-  });
-  showPlatform();
-
-  if (window.fetch) {
-    fetch("https://api.github.com/repos/vhittuvalli/vpn/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (rel) { release = rel; showPlatform(); })
-      .catch(function () {});
-  }
-
-  document.querySelectorAll(".copy").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var el = document.getElementById(btn.dataset.copy);
-      function done() { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1500); }
-      function select() {
-        var r = document.createRange(); r.selectNodeContents(el);
-        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
-      }
-      try { navigator.clipboard.writeText(el.textContent).then(done, select); } catch (e) { select(); }
-    });
+    try {
+      navigator.clipboard.writeText(el.textContent).then(function () {
+        b.textContent = "Copied";
+        setTimeout(function () { b.textContent = "Copy"; }, 1500);
+      }, select);
+    } catch (e) { select(); }
   });
 })();
 </script>
