@@ -229,13 +229,17 @@ func runServer(args []string) error {
 	state := newServerState(path, srv, cfg)
 	defer state.close()
 	go func() {
-		t := time.NewTicker(guestSweepInterval)
-		defer t.Stop()
+		sweep := time.NewTicker(guestSweepInterval)
+		defer sweep.Stop()
+		meter := time.NewTicker(meterInterval)
+		defer meter.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case now := <-t.C:
+			case now := <-meter.C:
+				state.measure(now)
+			case now := <-sweep.C:
 				state.sweep(now)
 			}
 		}

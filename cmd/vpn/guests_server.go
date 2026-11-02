@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vhittuvalli/vpn/internal/budget"
 	"github.com/vhittuvalli/vpn/internal/config"
 	"github.com/vhittuvalli/vpn/internal/guestapi"
 	"github.com/vhittuvalli/vpn/internal/registry"
@@ -16,13 +17,18 @@ import (
 // from server.json. Between sweeps the server already drops their packets.
 const guestSweepInterval = time.Minute
 
+// meterInterval is how often the interface counter is read for the monthly
+// cap. At 3 guests × 5 Mbit/s, 30 seconds is under 60 MB of overshoot.
+const meterInterval = 30 * time.Second
+
 // serverState keeps the running server, its guest key endpoint and
 // server.json in step. Reloads come from SIGHUP (`vpn invite`, `vpn revoke`,
 // `vpn guests`), from newly issued guest keys and from the sweep.
 type serverState struct {
-	path string
-	srv  *vpn.Server
-	reg  registry.Registry
+	path  string
+	srv   *vpn.Server
+	reg   registry.Registry
+	meter *budget.Meter
 
 	mu       sync.Mutex
 	guests   config.Guests
@@ -32,14 +38,39 @@ type serverState struct {
 
 func newServerState(path string, srv *vpn.Server, cfg *config.Server) *serverState {
 	st := &serverState{path: path, srv: srv, reg: registry.Registry{Path: path}}
+	st.meter = &budget.Meter{Path: usagePath(path), Read: budget.InterfaceCounter(cfg.NATInterface)}
 	st.handler = &guestapi.Handler{
 		Registry: st.reg,
 		Settings: st.guestSettings,
 		OnIssue:  func() { st.reload("new guest") },
-		LogPath:  filepath.Join(filepath.Dir(path), "guest-keys.log"),
+		LogPath:  guestLogPath(path),
+		Budget:   st.usage,
 	}
+	st.guests = cfg.Guests
+	st.measure(time.Now()) // before the endpoint starts, so it knows the usage
 	st.applyGuests(cfg.Guests)
 	return st
+}
+
+func usagePath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "usage.json")
+}
+func guestLogPath(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "guest-keys.log")
+}
+
+// usage is this month's transfer against the cap.
+func (st *serverState) usage() budget.Usage {
+	return st.meter.Usage(time.Now(), st.guestSettings().MonthlyCapBytes)
+}
+
+// measure samples the interface counter and pauses guests at the monthly
+// cap (or when the counter can't be read).
+func (st *serverState) measure(now time.Time) {
+	if err := st.meter.Sample(now); err != nil {
+		log.Printf("measuring monthly transfer: %v (guests are paused until it works)", err)
+	}
+	st.srv.SetGuestsPaused(st.meter.Usage(now, st.guestSettings().MonthlyCapBytes).Exceeded())
 }
 
 func (st *serverState) guestSettings() config.Guests {
