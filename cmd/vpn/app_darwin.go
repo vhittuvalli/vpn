@@ -41,6 +41,8 @@ const (
 	keyPromptText = "Paste the access key from your server. It starts with vpn://"
 	latestRelease = "https://api.github.com/repos/vhittuvalli/vpn/releases/latest"
 	downloadPage  = "https://vhittuvalli.github.io/vpn/"
+	guestKeyPage  = downloadPage + "#try" // the demo server's free guest keys
+	freeKeyButton = "Get a Free Key"
 	updateEvery   = 12 * time.Hour
 )
 
@@ -356,9 +358,14 @@ func (a *app) askForKey(firstRun bool) {
 		text = "Welcome! " + text
 	}
 	for {
-		key, err := promptForKey(text)
+		key, wantsFreeKey, err := promptForKey(text)
 		if err != nil {
 			return // canceled
+		}
+		if wantsFreeKey {
+			exec.Command("open", guestKeyPage).Run()
+			text = "Your browser is opening a page with free guest keys. Click Get a guest key there, copy it, then paste it here."
+			continue
 		}
 		if _, err := accesskey.Parse(key); err != nil {
 			text = "That didn't work: " + err.Error() + ".\n\n" + keyPromptText
@@ -476,7 +483,9 @@ func asq(s string) string {
 
 // ---- Dialogs ----------------------------------------------------------------
 
-func promptForKey(text string) (string, error) {
+// promptForKey asks for an access key. wantsFreeKey means the person clicked
+// the button to get a guest key from the demo server instead.
+func promptForKey(text string) (key string, wantsFreeKey bool, err error) {
 	prefill := ""
 	if clip, err := exec.Command("pbpaste").Output(); err == nil {
 		if c := strings.TrimSpace(string(clip)); strings.HasPrefix(c, "vpn://") {
@@ -486,14 +495,16 @@ func promptForKey(text string) (string, error) {
 	out, err := exec.Command("osascript",
 		"-e", `on run argv`,
 		"-e", `activate`,
-		"-e", `text returned of (display dialog (item 1 of argv) default answer (item 2 of argv) with title "`+dialogTitle+`" buttons {"Cancel", "Connect"} default button "Connect")`,
+		"-e", `set r to display dialog (item 1 of argv) default answer (item 2 of argv) with title "`+dialogTitle+`" buttons {"`+freeKeyButton+`", "Cancel", "Connect"} default button "Connect" cancel button "Cancel"`,
+		"-e", `return (button returned of r) & linefeed & (text returned of r)`,
 		"-e", `end run`,
 		text, prefill,
 	).Output()
 	if err != nil {
-		return "", errCanceled
+		return "", false, errCanceled
 	}
-	return strings.TrimSpace(string(out)), nil
+	button, typed := parseDialogResult(string(out))
+	return typed, button == freeKeyButton, nil
 }
 
 func alert(title, detail string) {
