@@ -97,13 +97,22 @@ func (h *serviceHandler) Execute(args []string, req <-chan svc.ChangeRequest, st
 func cmdInstallService(args []string) error {
 	fs := flag.NewFlagSet("install-service", flag.ContinueOnError)
 	owner := fs.String("owner", "", "SID of the user allowed to control the service")
+	errFile := fs.String("error-file", "", "write any error here too (the app reads it, since this runs without a console)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	err := installServiceAs(*owner)
+	if err != nil && *errFile != "" {
+		os.WriteFile(*errFile, []byte(err.Error()), 0o644)
+	}
+	return err
+}
+
+func installServiceAs(owner string) error {
 	if err := requireRoot(); err != nil {
 		return err
 	}
-	if _, err := windows.StringToSid(*owner); err != nil {
+	if _, err := windows.StringToSid(owner); err != nil {
 		return fmt.Errorf("--owner must be a user SID: %w", err)
 	}
 	self, err := os.Executable()
@@ -139,7 +148,7 @@ func cmdInstallService(args []string) error {
 		s, err = m.CreateService(serviceName, exe, mgr.Config{
 			DisplayName: serviceDisplayName, Description: serviceDescription,
 			StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem",
-		}, "daemon", "--owner", *owner)
+		}, "daemon", "--owner", owner)
 		if err != nil {
 			return err
 		}
@@ -148,7 +157,7 @@ func cmdInstallService(args []string) error {
 		if err != nil {
 			return err
 		}
-		cfg.BinaryPathName = fmt.Sprintf(`"%s" daemon --owner %s`, exe, *owner)
+		cfg.BinaryPathName = fmt.Sprintf(`"%s" daemon --owner %s`, exe, owner)
 		cfg.StartType = mgr.StartAutomatic
 		if err := s.UpdateConfig(cfg); err != nil {
 			return err
