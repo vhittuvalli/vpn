@@ -147,6 +147,30 @@ func (r Registry) RemoveExpiredGuests(now time.Time) ([]string, error) {
 	return r.RemoveIf(func(p config.PeerFile) bool { return p.Guest && guestExpired(p, now) })
 }
 
+// SweepGuests deletes guests that have expired, plus the named ones (guests
+// the running server has cut off for using up their data).
+func (r Registry) SweepGuests(now time.Time, overLimit []string) ([]string, error) {
+	over := map[string]bool{}
+	for _, n := range overLimit {
+		over[n] = true
+	}
+	return r.RemoveIf(func(p config.PeerFile) bool { return p.Guest && (guestExpired(p, now) || over[p.Name]) })
+}
+
+// GuestCount reports whether guest access is on, how many guests are active
+// and how many may be.
+func (r Registry) GuestCount(now time.Time) (enabled bool, active, max int, err error) {
+	f, err := config.ReadServerFile(r.Path)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	g, err := f.GuestSettings()
+	if err != nil {
+		return false, 0, 0, err
+	}
+	return g.Enabled, ActiveGuests(f, now), g.MaxActive, nil
+}
+
 // SetGuestsEnabled turns guest key issuing on or off.
 func (r Registry) SetGuestsEnabled(on bool) error {
 	return r.update(func(f *config.ServerFile) error {
