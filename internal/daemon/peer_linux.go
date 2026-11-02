@@ -6,7 +6,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const stateDir = "/var/lib/vpn"
+const defaultStateDir = "/var/lib/vpn"
 
 // peerUID returns the user ID of the process on the other end of conn.
 func peerUID(conn *net.UnixConn) (int, error) {

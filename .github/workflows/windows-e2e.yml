@@ -1,0 +1,113 @@
+name: windows-e2e
+
+# A real end-to-end check of the Windows app's service on a GitHub Windows
+# machine: install it, give it a guest key from the demo server, connect
+# through Wintun, check that traffic leaves from the server, turn it off,
+# kill it mid-connection and check normal internet comes back, uninstall.
+#
+# Runs only when asked, since each run uses one of the demo server's guest
+# keys: from Actions → windows-e2e → Run workflow, or by adding the
+# "windows-e2e" label to a pull request.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'windows-e2e'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build vpn.exe (console) and fetch wintun.dll
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force e2e | Out-Null
+          go build -o e2e\vpn.exe ./cmd/vpn
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+          $hash = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') { throw "wintun.zip checksum mismatch: $hash" }
+          Expand-Archive wintun.zip -DestinationPath wintun
+          Copy-Item wintun\wintun\bin\amd64\wintun.dll e2e\
+
+      - name: Install the service and connect with a guest key
+        shell: pwsh
+        run: |
+          function PublicIP { try { (Invoke-RestMethod -TimeoutSec 8 https://ifconfig.me/ip).Trim() } catch { '' } }
+          function WaitFor($want, $not) {
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep 2
+              $ip = PublicIP
+              if (($want -and $ip -eq $want) -or ($not -and $ip -and $ip -ne $not)) { return $ip }
+            }
+            return $ip
+          }
+          $before = PublicIP
+          Write-Output "IP before: $before"
+
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          e2e\vpn.exe install-service --owner $sid
+          if ($LASTEXITCODE -ne 0) { throw 'install-service failed' }
+          $svc = Get-Service VPN
+          Write-Output "service: $($svc.Status), $($svc.StartType)"
+          if (-not (Test-Path "$env:ProgramFiles\VPN\VPN.exe") -or -not (Test-Path "$env:ProgramFiles\VPN\wintun.dll")) { throw 'not installed to Program Files' }
+
+          $guest = Invoke-RestMethod -Method Post https://139.59.79.156.sslip.io/guest-key
+          Write-Output "guest key expires $($guest.expires_at)"
+          e2e\vpn.exe service key $guest.key
+          e2e\vpn.exe service on
+          $ip = WaitFor '139.59.79.156' $null
+          e2e\vpn.exe service
+          Get-NetAdapter | Where-Object InterfaceDescription -like '*Wintun*' | Format-Table Name, Status, InterfaceDescription
+          if ($ip -ne '139.59.79.156') {
+            Get-Content "$env:ProgramData\VPN\vpn.log" -ErrorAction SilentlyContinue
+            throw "traffic didn't go through the VPN (public IP: '$ip')"
+          }
+          Write-Output "IP through the VPN: $ip"
+
+      - name: Turn it off; normal internet must come back
+        shell: pwsh
+        run: |
+          e2e\vpn.exe service off
+          Start-Sleep 3
+          $ip = (Invoke-RestMethod -TimeoutSec 15 https://ifconfig.me/ip).Trim()
+          if ($ip -eq '139.59.79.156') { throw 'still going through the VPN after turning it off' }
+          Write-Output "IP after turning off: $ip"
+
+      - name: Kill the service mid-connection; normal internet must come back
+        shell: pwsh
+        run: |
+          e2e\vpn.exe service on
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep 2
+            try { if ((Invoke-RestMethod -TimeoutSec 8 https://ifconfig.me/ip).Trim() -eq '139.59.79.156') { break } } catch {}
+          }
+          # No automatic restart, so the check below sees the crash itself.
+          sc.exe failure VPN reset= 0 actions= '""' | Out-Null
+          $svcPid = (Get-CimInstance Win32_Service -Filter "Name='VPN'").ProcessId
+          Stop-Process -Id $svcPid -Force
+          Start-Sleep 4
+          $ip = (Invoke-RestMethod -TimeoutSec 15 https://ifconfig.me/ip).Trim()
+          if ($ip -eq '139.59.79.156') { throw 'still going through the VPN after the service was killed' }
+          Write-Output "IP after killing the service: $ip (firewall rules and routes went with it)"
+
+      - name: Show the service log
+        if: always()
+        shell: pwsh
+        run: Get-Content "$env:ProgramData\VPN\vpn.log" -ErrorAction SilentlyContinue
+
+      - name: Uninstall
+        shell: pwsh
+        run: |
+          e2e\vpn.exe uninstall
+          if (Get-Service VPN -ErrorAction SilentlyContinue) { throw 'service still there after uninstall' }
+          if (Test-Path "$env:ProgramFiles\VPN") { throw 'Program Files folder still there' }
+          Write-Output 'uninstalled cleanly'

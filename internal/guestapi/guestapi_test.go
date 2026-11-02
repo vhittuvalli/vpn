@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +112,8 @@ func TestIssueKey(t *testing.T) {
 	if err := json.Unmarshal(logData, &rec); err != nil || rec.Name != key.Name || rec.IP != "198.51.100.7" {
 		t.Fatalf("log: %s", logData)
 	}
-	if info, _ := os.Stat(fx.logPath); info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits.
+	if info, _ := os.Stat(fx.logPath); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("log permissions %v", info.Mode().Perm())
 	}
 }

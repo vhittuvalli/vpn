@@ -22,6 +22,19 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  # Windows: vet, tests, and the packaged app builds. (The race detector
+  # needs cgo, which the Windows runners don't set up, so it's left off.)
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build -ldflags "-H windowsgui" -o VPN.exe ./cmd/vpn
+
   # Each fuzz target gets 30 seconds of random input on every push and PR.
   # Plain `go test` above already runs their seed inputs.
   fuzz:

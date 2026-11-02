@@ -42,6 +42,8 @@ const usage = `usage:
   Connect:
     sudo vpn connect ACCESS_KEY     connect until Ctrl-C (add --https to look like web traffic)
     vpn app                         open the menu bar app (macOS)
+    vpn service [status|on|off|key ACCESS_KEY]
+                                    control the app's background service from a terminal
 
   Other:
     vpn version                     print the version
@@ -91,6 +93,12 @@ func main() {
 		err = guests(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
+	case "service":
+		err = serviceCommand(os.Args[2:])
+	case "install-service":
+		err = cmdInstallService(os.Args[2:])
+	case "uninstall":
+		err = cmdUninstall(os.Args[2:])
 	case "app":
 		err = runApp()
 	default:
@@ -121,13 +129,6 @@ func pubkey() error {
 		return err
 	}
 	fmt.Println(k.Public())
-	return nil
-}
-
-func requireRoot() error {
-	if os.Geteuid() != 0 {
-		return errors.New("this needs root: run with sudo")
-	}
 	return nil
 }
 
@@ -319,14 +320,14 @@ func connect(args []string) error {
 
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	owner := fs.Int("owner", 0, "user ID allowed to control the service, besides root")
+	owner := fs.String("owner", "", "user allowed to control the service besides root/SYSTEM (a uid, or a SID on Windows)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := requireRoot(); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return daemon.Run(ctx, version, *owner)
+	// Under Windows' service manager this follows its start/stop protocol;
+	// elsewhere it runs until interrupted.
+	return runService(func(ctx context.Context) error { return daemon.Run(ctx, version, *owner) })
 }
