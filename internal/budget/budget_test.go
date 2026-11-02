@@ -119,3 +119,16 @@ func TestInterfaceCounterNeedsInterface(t *testing.T) {
 		t.Fatal("expected an error without an interface")
 	}
 }
+
+// The kernel writes the counter as a decimal number and a newline.
+func TestReadCounter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tx_bytes")
+	os.WriteFile(path, []byte("229829728\n"), 0o644)
+	if n, err := readCounter(path); err != nil || n != 229829728 {
+		t.Fatalf("got %d, %v", n, err)
+	}
+	os.WriteFile(path, []byte("garbage\n"), 0o644)
+	if _, err := readCounter(path); err == nil {
+		t.Fatal("parsed garbage")
+	}
+}
