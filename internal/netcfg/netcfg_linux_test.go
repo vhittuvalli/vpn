@@ -25,7 +25,7 @@ func TestNATRules(t *testing.T) {
 	}
 	accept := pos("-i tun0 -j ACCEPT")
 	for _, blocked := range []string{
-		"-i tun0 -o tun0 -j DROP", // device to device
+		"-i tun0 -o tun0 -j DROP",                            // device to device
 		"-i tun0 -s 10.8.0.128/25 -p tcp --dport 25 -j DROP", // guests can't send mail
 		"-i tun0 ! -o tun0 -d 169.254.0.0/16 -j DROP",
 		"-i tun0 ! -o tun0 -d 10.0.0.0/8 -j DROP",
