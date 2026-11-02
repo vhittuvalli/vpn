@@ -168,7 +168,7 @@ func runServer(args []string) error {
 		return err
 	}
 	if cfg.NATInterface != "" {
-		undo, err := netcfg.EnableNAT(dev.Name(), cfg.NATInterface, cfg.Address)
+		undo, err := netcfg.EnableNAT(dev.Name(), cfg.NATInterface, cfg.Address, cfg.Guests.Pool)
 		if err != nil {
 			return err
 		}

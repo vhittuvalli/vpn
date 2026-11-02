@@ -8,7 +8,7 @@ import (
 )
 
 func TestNATRules(t *testing.T) {
-	rules := natRules("tun0", "eth0", netip.MustParsePrefix("10.8.0.1/24"))
+	rules := natRules("tun0", "eth0", netip.MustParsePrefix("10.8.0.1/24"), netip.MustParsePrefix("10.8.0.128/25"))
 	// Inserted at the top in order, so the chain reads in reverse.
 	var chain []string
 	for _, r := range slices.Backward(rules) {
@@ -26,11 +26,17 @@ func TestNATRules(t *testing.T) {
 	accept := pos("-i tun0 -j ACCEPT")
 	for _, blocked := range []string{
 		"-i tun0 -o tun0 -j DROP", // device to device
+		"-i tun0 -s 10.8.0.128/25 -p tcp --dport 25 -j DROP", // guests can't send mail
 		"-i tun0 ! -o tun0 -d 169.254.0.0/16 -j DROP",
 		"-i tun0 ! -o tun0 -d 10.0.0.0/8 -j DROP",
 	} {
 		if pos(blocked) > accept {
 			t.Errorf("%q comes after the ACCEPT, so it never applies", blocked)
+		}
+	}
+	for _, r := range natRules("tun0", "eth0", netip.MustParsePrefix("10.8.0.1/24"), netip.Prefix{}) {
+		if slices.Contains(r, "25") {
+			t.Errorf("SMTP rule without a guest pool: %v", r)
 		}
 	}
 	if !slices.ContainsFunc(rules, func(r []string) bool {

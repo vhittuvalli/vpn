@@ -48,12 +48,14 @@ func RouteAllTraffic(tunName string, server netip.Addr) (Cleanup, error) {
 
 // EnableNAT lets clients reach the internet through the server: the kernel
 // forwards their packets and rewrites the source address to the server's.
-func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, error) {
+// Guests (addresses in guestPool, if valid) can't send mail on TCP 25, the
+// usual way an open relay gets abused for spam.
+func EnableNAT(tunName, outInterface string, subnet, guestPool netip.Prefix) (Cleanup, error) {
 	if _, err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return nil, err
 	}
 	var do, undo [][]string
-	for _, r := range natRules(tunName, outInterface, subnet) {
+	for _, r := range natRules(tunName, outInterface, subnet, guestPool) {
 		table, chain, spec := r[:2], r[2], r[3:]
 		do = append(do, append(append([]string{"iptables"}, table...), append([]string{"-I", chain}, spec...)...))
 		undo = append(undo, append(append([]string{"iptables"}, table...), append([]string{"-D", chain}, spec...)...))
@@ -68,7 +70,7 @@ func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, erro
 // natRules lists the NAT and forwarding rules as (table, chain, spec...).
 // They are inserted at the top of their chains in order, so later rules end
 // up above earlier ones.
-func natRules(tunName, outInterface string, subnet netip.Prefix) [][]string {
+func natRules(tunName, outInterface string, subnet, guestPool netip.Prefix) [][]string {
 	rules := [][]string{
 		{"-t", "nat", "POSTROUTING", "-s", subnet.Masked().String(), "-o", outInterface, "-j", "MASQUERADE"},
 		{"-t", "filter", "FORWARD", "-i", tunName, "-j", "ACCEPT"},
@@ -80,6 +82,9 @@ func natRules(tunName, outInterface string, subnet netip.Prefix) [][]string {
 	// Rules are inserted at the top, so these land above the ACCEPT.
 	for _, blocked := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"} {
 		rules = append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "!", "-o", tunName, "-d", blocked, "-j", "DROP"})
+	}
+	if guestPool.IsValid() {
+		rules = append(rules, []string{"-t", "filter", "FORWARD", "-i", tunName, "-s", guestPool.String(), "-p", "tcp", "--dport", "25", "-j", "DROP"})
 	}
 	// Devices can't reach each other through the tunnel: with several
 	// people on one server, nobody can connect to anyone else's machine.
