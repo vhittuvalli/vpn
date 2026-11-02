@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -109,7 +110,8 @@ func TestStateFile(t *testing.T) {
 	if err != nil || st.Month != "2026-11" || st.SentBytes != 42 {
 		t.Fatalf("%+v, %v", st, err)
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits.
+	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("permissions %v", info.Mode().Perm())
 	}
 }

@@ -1,0 +1,82 @@
+name: windows-e2e
+
+# A real end-to-end check of the Windows client on a GitHub Windows machine:
+# get a guest key from the demo server, connect through Wintun, check that
+# traffic leaves from the server, force-kill the client and check the
+# firewall rules went with it, then install and remove the service.
+#
+# Runs only when asked, since each run uses one of the demo server's guest
+# keys: from Actions → windows-e2e → Run workflow, or by adding the
+# "windows-e2e" label to a pull request.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'windows-e2e'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build vpn.exe (console) and fetch wintun.dll
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force e2e | Out-Null
+          go build -o e2e\vpn.exe ./cmd/vpn
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+          $hash = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') { throw "wintun.zip checksum mismatch: $hash" }
+          Expand-Archive wintun.zip -DestinationPath wintun
+          Copy-Item wintun\wintun\bin\amd64\wintun.dll e2e\
+
+      - name: Connect with a guest key from the demo server
+        shell: pwsh
+        run: |
+          $before = (Invoke-RestMethod https://ifconfig.me/ip).Trim()
+          Write-Output "IP before: $before"
+          $guest = Invoke-RestMethod -Method Post https://139.59.79.156.sslip.io/guest-key
+          Write-Output "guest key expires $($guest.expires_at)"
+          $p = Start-Process -FilePath e2e\vpn.exe -ArgumentList @('connect', $guest.key) -RedirectStandardError e2e\client.log -PassThru -WindowStyle Hidden
+          $p.Id | Set-Content e2e\client.pid
+          $ip = ''
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep 2
+            try { $ip = (Invoke-RestMethod -TimeoutSec 5 https://ifconfig.me/ip).Trim() } catch { $ip = '' }
+            if ($ip -eq '139.59.79.156') { break }
+          }
+          Get-Content e2e\client.log
+          Get-NetAdapter | Where-Object InterfaceDescription -like '*Wintun*' | Format-Table Name, Status, InterfaceDescription
+          if ($ip -ne '139.59.79.156') { throw "traffic didn't go through the VPN (public IP: '$ip')" }
+          Write-Output "IP through the VPN: $ip"
+
+      - name: Kill the client; the internet must come back
+        shell: pwsh
+        run: |
+          Stop-Process -Id (Get-Content e2e\client.pid) -Force
+          Start-Sleep 3
+          $ip = (Invoke-RestMethod -TimeoutSec 15 https://ifconfig.me/ip).Trim()
+          if ($ip -eq '139.59.79.156') { throw 'still going through the VPN after the client was killed' }
+          Write-Output "IP after the crash: $ip (firewall rules and routes are gone)"
+
+      - name: Install and remove the service
+        shell: pwsh
+        run: |
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          e2e\vpn.exe install-service --owner $sid
+          Start-Sleep 3
+          $svc = Get-Service VPN
+          Write-Output "service: $($svc.Status), $($svc.StartType)"
+          if ($svc.Status -ne 'Running') { Get-Content "$env:ProgramData\VPN\vpn.log" -ErrorAction SilentlyContinue; throw 'service not running' }
+          if (-not (Test-Path "$env:ProgramFiles\VPN\VPN.exe") -or -not (Test-Path "$env:ProgramFiles\VPN\wintun.dll")) { throw 'not installed to Program Files' }
+          e2e\vpn.exe uninstall
+          if (Get-Service VPN -ErrorAction SilentlyContinue) { throw 'service still there after uninstall' }
+          Write-Output 'service installed, ran, and uninstalled cleanly'
