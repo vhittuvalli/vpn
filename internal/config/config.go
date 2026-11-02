@@ -257,6 +257,17 @@ func LoadServer(path string) (*Server, error) {
 	return s, nil
 }
 
+// GuestSettings returns the file's guest settings with defaults applied,
+// for code that edits server.json without loading the whole config.
+func (f *ServerFile) GuestSettings() (Guests, error) {
+	subnet, err := parseIPv4Prefix(f.Address)
+	if err != nil {
+		return Guests{}, fmt.Errorf("address: %w", err)
+	}
+	g, errs := loadGuests(f.Guests, subnet, f.Endpoint)
+	return g, errors.Join(errs...)
+}
+
 // loadGuests fills in guest settings, with defaults for anything unset.
 func loadGuests(f *GuestFile, subnet netip.Prefix, endpoint string) (Guests, []error) {
 	g := Guests{
