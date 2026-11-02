@@ -1,10 +1,13 @@
-// Package netcfg configures addresses, routes and NAT by running the OS's
-// own networking commands (ifconfig/route on macOS, ip/iptables on Linux).
+// Package netcfg configures addresses, routes, DNS, the kill switch and NAT:
+// by running the OS's own networking commands on macOS (ifconfig, route,
+// pf) and Linux (ip, iptables), and through the IP Helper API and Windows
+// Filtering Platform on Windows.
 package netcfg
 
 import (
 	"fmt"
 	"log"
+	"net/netip"
 	"os/exec"
 	"strings"
 )
@@ -55,4 +58,29 @@ func runAll(do, undo [][]string) (Cleanup, error) {
 		}
 	}
 	return func() { cleanup(len(do)) }, nil
+}
+
+// Route is a routing table entry, reduced to what choosing a path needs.
+type Route struct {
+	Interface uint64 // OS-specific interface identifier
+	Prefix    netip.Prefix
+	NextHop   netip.Addr
+	Metric    uint32 // route metric plus interface metric
+}
+
+// BestDefaultRoute picks the IPv4 default route with the lowest metric,
+// ignoring the tunnel's own interface: the path traffic to the VPN server
+// must keep using once everything else goes through the tunnel.
+func BestDefaultRoute(routes []Route, tunnel uint64) (Route, bool) {
+	var best Route
+	found := false
+	for _, r := range routes {
+		if r.Interface == tunnel || r.Prefix.Bits() != 0 || !r.Prefix.Addr().Is4() {
+			continue
+		}
+		if !found || r.Metric < best.Metric {
+			best, found = r, true
+		}
+	}
+	return best, found
 }
