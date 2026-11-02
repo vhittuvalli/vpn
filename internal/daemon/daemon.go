@@ -1,8 +1,10 @@
-// Package daemon is the background service behind the Mac app. Changing
-// routes, DNS and the firewall needs root, so a small root process owns the
-// tunnel and the app (running as the user) tells it what to do over a Unix
-// socket. Only root and the user who installed the service may send
-// commands; the kernel reports who is on the other end of the socket.
+// Package daemon is the background service behind the Mac and Windows apps.
+// Changing routes, DNS and the firewall needs root (or SYSTEM), so a small
+// privileged process owns the tunnel and the app, running as the user, tells
+// it what to do: over a Unix socket on macOS and Linux, where the kernel
+// reports who is on the other end, and over a named pipe on Windows, whose
+// permissions only let in the system, administrators and the user who
+// installed the service.
 //
 // Each connection carries one JSON Request and gets one JSON Status back.
 package daemon
@@ -26,8 +28,6 @@ import (
 	"github.com/vhittuvalli/vpn/internal/tunnel"
 	"github.com/vhittuvalli/vpn/internal/vpn"
 )
-
-const SocketPath = "/var/run/vpn.sock"
 
 // Commands.
 const (
@@ -96,7 +96,7 @@ type TrustedNetwork struct {
 
 type Daemon struct {
 	version string
-	owner   int // uid allowed to send commands, besides root
+	owner   string // user allowed to send commands besides root/SYSTEM: a uid, or a SID on Windows
 	dir     string
 
 	// op runs commands that change state one at a time, so a new tunnel
@@ -123,7 +123,7 @@ type Daemon struct {
 // networkCheckInterval is how often the service looks for a network change.
 const networkCheckInterval = 5 * time.Second
 
-func newDaemon(dir, version string, owner int) *Daemon {
+func newDaemon(dir, version, owner string) *Daemon {
 	return &Daemon{
 		version: version, owner: owner, dir: dir, state: StateOff,
 		settings:       settings{KillSwitch: true, AllowLAN: true},
@@ -133,9 +133,9 @@ func newDaemon(dir, version string, owner int) *Daemon {
 }
 
 // Run serves commands until ctx is canceled, then disconnects.
-func Run(ctx context.Context, version string, owner int) error {
-	d := newDaemon(stateDir, version, owner)
-	if err := os.MkdirAll(d.dir, 0o700); err != nil {
+func Run(ctx context.Context, version, owner string) error {
+	d := newDaemon(stateDir(), version, owner)
+	if err := prepareStateDir(d.dir); err != nil {
 		return err
 	}
 	d.load()
@@ -145,20 +145,15 @@ func Run(ctx context.Context, version string, owner int) error {
 		log.Printf("reset: %v", err)
 	}
 
-	os.Remove(SocketPath)
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: SocketPath, Net: "unix"})
+	ln, err := listen(owner)
 	if err != nil {
-		return err
-	}
-	// Anyone may connect; serve() checks who they are.
-	if err := os.Chmod(SocketPath, 0o666); err != nil {
 		return err
 	}
 	go func() {
 		<-ctx.Done()
 		ln.Close()
 	}()
-	log.Printf("vpn service %s listening on %s (owner uid %d)", version, SocketPath, owner)
+	log.Printf("vpn service %s listening on %s (owner %s)", version, ln.Addr(), owner)
 
 	d.checkNetwork()
 	d.mu.Lock()
@@ -178,7 +173,7 @@ func Run(ctx context.Context, version string, owner int) error {
 	}()
 
 	for {
-		conn, err := ln.AcceptUnix()
+		conn, err := ln.Accept()
 		if err != nil {
 			break
 		}
@@ -187,15 +182,14 @@ func Run(ctx context.Context, version string, owner int) error {
 	d.mu.Lock()
 	d.stopLocked()
 	d.mu.Unlock()
-	os.Remove(SocketPath)
+	closeListener()
 	return nil
 }
 
-func (d *Daemon) serve(conn *net.UnixConn) {
+func (d *Daemon) serve(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	uid, err := peerUID(conn)
-	if err != nil || (uid != 0 && uid != d.owner) {
+	if !allowed(conn, d.owner) {
 		json.NewEncoder(conn).Encode(Status{Version: d.version, Error: "not allowed: the VPN service belongs to another user"})
 		return
 	}
@@ -430,7 +424,7 @@ func (d *Daemon) save() {
 
 // Call sends one request to the running service.
 func Call(req Request) (*Status, error) {
-	conn, err := net.DialTimeout("unix", SocketPath, 2*time.Second)
+	conn, err := dial(2 * time.Second)
 	if err != nil {
 		return nil, err
 	}

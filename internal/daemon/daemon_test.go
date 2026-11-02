@@ -32,7 +32,7 @@ type testDaemon struct {
 
 func newTestDaemon(t *testing.T, dir string) *testDaemon {
 	t.Helper()
-	td := &testDaemon{Daemon: newDaemon(dir, "test", 0), network: home}
+	td := &testDaemon{Daemon: newDaemon(dir, "test", "0"), network: home}
 	td.currentNetwork = func() (netid.Network, error) {
 		td.mu.Lock()
 		defer td.mu.Unlock()
