@@ -204,6 +204,37 @@ sudo rm -rf "/Library/Application Support/vpn"
 rm -f ~/Library/LaunchAgents/com.vhittuvalli.vpn.app.plist
 ```
 
+### Connect from Windows
+
+Windows 10 or 11. Download `VPN-<version>-windows-x64.zip` (or `-arm64`)
+from [Releases](https://github.com/vhittuvalli/vpn/releases), drag the VPN
+folder out of it, and double-click `VPN.exe`. It isn't code-signed, so
+SmartScreen may stop it the first time: click **More info**, then **Run
+anyway**. Then allow the prompt to make changes, and paste your access key.
+It lives in the system tray from then on, with the same menu as the Mac app.
+
+How it fits together: the tray app runs as you. A Windows service (`VPN`,
+running as SYSTEM from `C:\Program Files\VPN`, which ordinary users can't
+modify) owns the tunnel. It takes commands over the named pipe
+`\\.\pipe\vpn-service`, whose permissions only let in SYSTEM,
+administrators and the user who installed it, and logs to
+`C:\ProgramData\VPN\vpn.log`. The network adapter is
+[Wintun](https://www.wintun.net) (`wintun.dll`, shipped next to `VPN.exe`),
+and routes, DNS and the firewall go through WireGuard's Windows code
+(`winipcfg` and its Windows Filtering Platform rules). The firewall rules are
+tied to the service process, so if it crashes Windows removes them and the
+connection falls back to normal.
+
+Differences from the Mac app, for now:
+
+- The kill switch is always on while connected, so your local network
+  (printers, file shares) isn't reachable, and other programs can't reach
+  the VPN server's IP outside the tunnel.
+- Trusted networks are Mac only.
+
+To uninstall: run `VPN.exe uninstall` from an administrator terminal, then
+delete the folder you unzipped.
+
 ### Connect from Linux
 
 ```bash
@@ -378,4 +409,4 @@ git tag v0.1.0 && git push origin v0.1.0
   seconds.
 - Each packet costs one system call. That's fine for normal use but slower
   than kernel WireGuard.
-- Runs on macOS and Linux.
+- Runs on macOS, Windows and Linux (servers on Linux only).
