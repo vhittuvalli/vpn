@@ -50,7 +50,7 @@ func TestOldServerFileStillLoads(t *testing.T) {
 		t.Fatalf("peer: %+v", s.Peers)
 	}
 	g := s.Guests
-	if g.Enabled || g.TTL != time.Hour || g.QuotaBytes != 500_000_000 || g.MaxActive != 20 || g.PerIPPerDay != 3 {
+	if g.Enabled || g.TTL != time.Hour || g.QuotaBytes != 500_000_000 || g.MaxActive != 3 || g.PerIPPerDay != 3 || g.MonthlyCapBytes != 450<<30 {
 		t.Fatalf("guest defaults: %+v", g)
 	}
 	if g.Hostname != "139.59.79.156.sslip.io" || g.Pool != netip.MustParsePrefix("10.8.0.128/25") {

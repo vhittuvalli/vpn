@@ -59,15 +59,25 @@ type Guests struct {
 	Hostname       string        // public name of the key endpoint, for its TLS certificate
 	AllowedOrigins []string      // web pages allowed to call the endpoint (CORS)
 	Pool           netip.Prefix  // tunnel addresses reserved for guests
+
+	// MonthlyCapBytes caps everything the server sends to the internet in a
+	// calendar month (UTC), guests and regular devices together, as the
+	// hosting provider counts it. Reaching it cuts guests off until the
+	// next month; regular devices keep working.
+	MonthlyCapBytes uint64
 }
 
 // Guest access defaults.
 const (
 	DefaultGuestTTL         = time.Hour
 	DefaultGuestQuota       = 500_000_000 // 500 MB
-	DefaultGuestMaxActive   = 20
+	DefaultGuestMaxActive   = 3
 	DefaultGuestPerIPPerDay = 3
 	DefaultGuestRateMbps    = 5
+
+	// 450 GiB: under the 500 GiB a DigitalOcean $4 droplet includes each
+	// month, leaving room for the owner's own use.
+	DefaultGuestMonthlyCap = 450 << 30
 )
 
 var DefaultGuestOrigins = []string{"https://vhittuvalli.github.io"}
@@ -138,6 +148,7 @@ type GuestFile struct {
 	RateLimitMbps   float64  `json:"rate_limit_mbps,omitempty"`
 	GuestHostname   string   `json:"guest_hostname,omitempty"`
 	AllowedOrigins  []string `json:"allowed_origins,omitempty"`
+	MonthlyCapBytes uint64   `json:"monthly_cap_bytes,omitempty"`
 }
 
 // ReadServerFile reads server.json without validating it.
@@ -273,7 +284,7 @@ func loadGuests(f *GuestFile, subnet netip.Prefix, endpoint string) (Guests, []e
 	g := Guests{
 		TTL: DefaultGuestTTL, QuotaBytes: DefaultGuestQuota, MaxActive: DefaultGuestMaxActive,
 		PerIPPerDay: DefaultGuestPerIPPerDay, RateLimitMbps: DefaultGuestRateMbps,
-		AllowedOrigins: DefaultGuestOrigins,
+		AllowedOrigins: DefaultGuestOrigins, MonthlyCapBytes: DefaultGuestMonthlyCap,
 	}
 	// By default the endpoint's TLS name is <ip>.sslip.io, which resolves to
 	// the server without any DNS setup.
@@ -312,6 +323,9 @@ func loadGuests(f *GuestFile, subnet netip.Prefix, endpoint string) (Guests, []e
 	}
 	if len(f.AllowedOrigins) > 0 {
 		g.AllowedOrigins = f.AllowedOrigins
+	}
+	if f.MonthlyCapBytes != 0 {
+		g.MonthlyCapBytes = f.MonthlyCapBytes
 	}
 	if g.MaxActive < 0 || g.PerIPPerDay < 0 || g.RateLimitMbps < 0 {
 		errs = append(errs, errors.New("guests: limits can't be negative"))
