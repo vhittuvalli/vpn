@@ -101,3 +101,29 @@ func TestTokenBucket(t *testing.T) {
 		t.Fatalf("sent %d bytes in 10 s at 5 Mbit/s, want about %d", sent, want)
 	}
 }
+
+// When the monthly cap is reached, guests stop at once; regular devices don't.
+func TestGuestsPaused(t *testing.T) {
+	guest := startPeer(t, "udp", DefaultLoadThreshold, config.Peer{Guest: true, ExpiresAt: time.Now().Add(time.Hour)})
+	up := ipv4Packet("10.8.0.2", "10.8.0.1", "hi")
+	guest.client.fromOS <- up
+	guest.server.expect(t, up)
+
+	guest.serverVPN.SetGuestsPaused(true)
+	guest.client.fromOS <- up
+	guest.server.expectNothing(t)
+	guest.server.fromOS <- ipv4Packet("10.8.0.1", "10.8.0.2", "hi")
+	guest.client.expectNothing(t)
+	if over := guest.serverVPN.GuestsOverLimit(time.Now()); len(over) != 1 {
+		t.Fatalf("paused guests should be swept: %v", over)
+	}
+
+	guest.serverVPN.SetGuestsPaused(false)
+	guest.client.fromOS <- up
+	guest.server.expect(t, up)
+
+	device := start(t, "udp", DefaultLoadThreshold)
+	device.serverVPN.SetGuestsPaused(true)
+	device.client.fromOS <- up
+	device.server.expect(t, up)
+}

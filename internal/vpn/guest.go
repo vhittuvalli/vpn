@@ -55,12 +55,31 @@ func (p *serverPeer) guestAllow(n int) bool {
 	return p.guest == nil || p.guest.bucket == nil || p.guest.bucket.allow(n, time.Now())
 }
 
-// GuestsOverLimit names the guests that have run out of time or data, for
-// the sweep that removes them from the config.
+// guestBlocked reports whether p is a guest that may not use the VPN right
+// now: its own limits are used up, or guests are paused for the month.
+func (s *Server) guestBlocked(p *serverPeer, now time.Time) bool {
+	return p.guest != nil && (s.guestsPaused.Load() || p.guestCutOff(now))
+}
+
+// SetGuestsPaused cuts every guest off at once (true) when the server's
+// monthly transfer cap is reached, or lets them back (false).
+func (s *Server) SetGuestsPaused(paused bool) {
+	if s.guestsPaused.Swap(paused) != paused {
+		if paused {
+			log.Print("monthly transfer cap reached: guests are cut off until next month")
+		} else {
+			log.Print("guests allowed again")
+		}
+	}
+}
+
+// GuestsOverLimit names the guests that have run out of time or data, or
+// all guests while they're paused, for the sweep that removes them from
+// the config.
 func (s *Server) GuestsOverLimit(now time.Time) []string {
 	var names []string
 	for _, p := range s.allPeers() {
-		if p.guestCutOff(now) {
+		if s.guestBlocked(p, now) {
 			names = append(names, p.name)
 		}
 	}

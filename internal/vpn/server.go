@@ -41,6 +41,8 @@ type Server struct {
 	carried    map[protocol.PublicKey]PeerStats // totals from earlier runs (LoadStatus)
 	guestRate  float64                          // Mbit/s cap for guests; 0 means none
 
+	guestsPaused atomic.Bool // the monthly cap is reached: every guest is cut off
+
 	loadMu       sync.Mutex
 	loadWindow   time.Time
 	loadCount    int
@@ -242,7 +244,7 @@ func (s *Server) handleInitiation(msg []byte, ep Endpoint) {
 	if p == nil {
 		return // revoked while the handshake was being checked
 	}
-	if p.guestCutOff(time.Now()) {
+	if s.guestBlocked(p, time.Now()) {
 		return // a guest out of time or data gets no new session
 	}
 	p.mu.Lock()
@@ -333,7 +335,7 @@ func (s *Server) handleData(msg []byte, ep Endpoint) {
 	if s.peerByKey(p.publicKey) != p {
 		return // revoked
 	}
-	if p.guestCutOff(time.Now()) {
+	if s.guestBlocked(p, time.Now()) {
 		return
 	}
 	p.mu.Lock()
@@ -372,7 +374,7 @@ func (s *Server) tunLoop() error {
 			continue
 		}
 		p := s.peerByIP(dst)
-		if p == nil || p.guestCutOff(time.Now()) || !p.guestAllow(n) {
+		if p == nil || s.guestBlocked(p, time.Now()) || !p.guestAllow(n) {
 			continue
 		}
 		p.mu.Lock()
