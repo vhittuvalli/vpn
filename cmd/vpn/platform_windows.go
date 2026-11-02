@@ -148,6 +148,9 @@ func installServiceAs(owner string) error {
 		s, err = m.CreateService(serviceName, exe, mgr.Config{
 			DisplayName: serviceDisplayName, Description: serviceDescription,
 			StartType: mgr.StartAutomatic, ServiceStartName: "LocalSystem",
+			// A service SID of its own: the firewall rules let the VPN's
+			// own traffic through by matching it.
+			SidType: windows.SERVICE_SID_TYPE_UNRESTRICTED,
 		}, "daemon", "--owner", owner)
 		if err != nil {
 			return err
@@ -159,6 +162,7 @@ func installServiceAs(owner string) error {
 		}
 		cfg.BinaryPathName = fmt.Sprintf(`"%s" daemon --owner %s`, exe, owner)
 		cfg.StartType = mgr.StartAutomatic
+		cfg.SidType = windows.SERVICE_SID_TYPE_UNRESTRICTED
 		if err := s.UpdateConfig(cfg); err != nil {
 			return err
 		}

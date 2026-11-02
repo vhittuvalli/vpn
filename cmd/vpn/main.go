@@ -42,6 +42,8 @@ const usage = `usage:
   Connect:
     sudo vpn connect ACCESS_KEY     connect until Ctrl-C (add --https to look like web traffic)
     vpn app                         open the menu bar app (macOS)
+    vpn service [status|on|off|key ACCESS_KEY]
+                                    control the app's background service from a terminal
 
   Other:
     vpn version                     print the version
@@ -91,6 +93,8 @@ func main() {
 		err = guests(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
+	case "service":
+		err = serviceCommand(os.Args[2:])
 	case "install-service":
 		err = cmdInstallService(os.Args[2:])
 	case "uninstall":

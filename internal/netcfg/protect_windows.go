@@ -1,6 +1,7 @@
 package netcfg
 
 import (
+	"errors"
 	"log"
 	"net/netip"
 
@@ -26,6 +27,16 @@ func KillSwitch(tunName string, server netip.Addr, allowLAN, blockIPv4 bool) (Cl
 		log.Print("note: on Windows the kill switch is always on and blocks the local network")
 	}
 	if err := firewall.EnableFirewall(uint64(luid), false, nil); err != nil {
+		// The rules recognize the VPN's own traffic by the Windows
+		// service's SID, which a program started from a terminal doesn't
+		// have.
+		if errors.Is(err, windows.ERROR_NO_SUCH_GROUP) {
+			if blockIPv4 {
+				return nil, errors.New("on Windows the kill switch only works inside the VPN service: use the app (or `vpn service`), or connect with --no-kill-switch")
+			}
+			log.Print("warning: without the VPN service, IPv6 and DNS outside the tunnel aren't blocked")
+			return func() {}, nil
+		}
 		return nil, err
 	}
 	return firewall.DisableFirewall, nil
