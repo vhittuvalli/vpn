@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"time"
 
 	"github.com/vhittuvalli/vpn/internal/protocol"
 )
@@ -31,12 +32,69 @@ type Server struct {
 	NATInterface string // if set, share this interface's internet connection with clients
 	Endpoint     string // public IP or hostname clients connect to; goes into access keys
 	Peers        []Peer
+	Guests       Guests
 }
 
 type Peer struct {
 	Name      string
 	PublicKey protocol.PublicKey
 	Address   netip.Addr // the one tunnel address this peer may use
+
+	// Guests are temporary peers handed out by the guest key endpoint. They
+	// stop working at ExpiresAt or once they have used QuotaBytes (0: no
+	// quota), whichever comes first.
+	Guest      bool
+	ExpiresAt  time.Time
+	QuotaBytes uint64
+}
+
+// Guests configures self-serve guest access. It is off unless enabled.
+type Guests struct {
+	Enabled        bool
+	TTL            time.Duration // how long a guest key works
+	QuotaBytes     uint64        // data allowance per guest, both directions together
+	MaxActive      int           // guests that may exist at once
+	PerIPPerDay    int           // keys one client IP may get in 24 hours
+	RateLimitMbps  float64       // per-guest bandwidth cap; 0 means none
+	Hostname       string        // public name of the key endpoint, for its TLS certificate
+	AllowedOrigins []string      // web pages allowed to call the endpoint (CORS)
+	Pool           netip.Prefix  // tunnel addresses reserved for guests
+
+	// MonthlyCapBytes caps everything the server sends to the internet in a
+	// calendar month (UTC), guests and regular devices together, as the
+	// hosting provider counts it. Reaching it cuts guests off until the
+	// next month; regular devices keep working.
+	MonthlyCapBytes uint64
+}
+
+// Guest access defaults.
+const (
+	DefaultGuestTTL         = time.Hour
+	DefaultGuestQuota       = 500_000_000 // 500 MB
+	DefaultGuestMaxActive   = 3
+	DefaultGuestPerIPPerDay = 3
+	DefaultGuestRateMbps    = 5
+
+	// 450 GiB: under the 500 GiB a DigitalOcean $4 droplet includes each
+	// month, leaving room for the owner's own use.
+	DefaultGuestMonthlyCap = 450 << 30
+)
+
+var DefaultGuestOrigins = []string{"https://vhittuvalli.github.io"}
+
+// GuestPool is the upper half of the tunnel subnet, which guests get their
+// addresses from (10.8.0.128/25 for 10.8.0.1/24). Keeping guests in one range
+// lets the server firewall them with a single rule. ok is false when the
+// subnet is too small to split.
+func GuestPool(subnet netip.Prefix) (pool netip.Prefix, ok bool) {
+	if !subnet.Addr().Is4() || subnet.Bits() > 29 {
+		return netip.Prefix{}, false
+	}
+	b := subnet.Masked().Addr().As4()
+	start := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	start += uint32(1) << (32 - subnet.Bits() - 1)
+	upper := netip.AddrFrom4([4]byte{byte(start >> 24), byte(start >> 16), byte(start >> 8), byte(start)})
+	return netip.PrefixFrom(upper, subnet.Bits()+1), true
 }
 
 type Client struct {
@@ -66,13 +124,31 @@ type ServerFile struct {
 	Address      string     `json:"address"`
 	MTU          int        `json:"mtu,omitempty"`
 	NATInterface string     `json:"nat_interface,omitempty"`
+	Guests       *GuestFile `json:"guests,omitempty"`
 	Peers        []PeerFile `json:"peers"`
 }
 
 type PeerFile struct {
-	Name      string `json:"name"`
-	PublicKey string `json:"public_key"`
-	Address   string `json:"address"`
+	Name       string `json:"name"`
+	PublicKey  string `json:"public_key"`
+	Address    string `json:"address"`
+	Guest      bool   `json:"guest,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"` // RFC 3339
+	QuotaBytes uint64 `json:"quota_bytes,omitempty"`
+}
+
+// GuestFile is the "guests" section of server.json. Missing fields take the
+// defaults above.
+type GuestFile struct {
+	Enabled         bool     `json:"enabled"`
+	TTL             string   `json:"ttl,omitempty"` // e.g. "1h", "30m"
+	QuotaBytes      uint64   `json:"quota_bytes,omitempty"`
+	MaxActiveGuests int      `json:"max_active_guests,omitempty"`
+	PerIPPerDay     int      `json:"per_ip_per_day,omitempty"`
+	RateLimitMbps   float64  `json:"rate_limit_mbps,omitempty"`
+	GuestHostname   string   `json:"guest_hostname,omitempty"`
+	AllowedOrigins  []string `json:"allowed_origins,omitempty"`
+	MonthlyCapBytes uint64   `json:"monthly_cap_bytes,omitempty"`
 }
 
 // ReadServerFile reads server.json without validating it.
@@ -175,12 +251,94 @@ func LoadServer(path string) (*Server, error) {
 			errs = append(errs, fmt.Errorf("peer %s: address %s is already in use", p.Name, p.Address))
 		}
 		seenKey[p.PublicKey], seenAddr[p.Address] = true, true
+		if fp.Guest {
+			p.Guest, p.QuotaBytes = true, fp.QuotaBytes
+			if p.ExpiresAt, err = time.Parse(time.RFC3339, fp.ExpiresAt); err != nil {
+				errs = append(errs, fmt.Errorf("peer %s: expires_at must be an RFC 3339 time like 2026-11-02T15:04:05Z", p.Name))
+			}
+		}
 		s.Peers = append(s.Peers, p)
 	}
+	var gerrs []error
+	s.Guests, gerrs = loadGuests(f.Guests, s.Address, s.Endpoint)
+	errs = append(errs, gerrs...)
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return s, nil
+}
+
+// GuestSettings returns the file's guest settings with defaults applied,
+// for code that edits server.json without loading the whole config.
+func (f *ServerFile) GuestSettings() (Guests, error) {
+	subnet, err := parseIPv4Prefix(f.Address)
+	if err != nil {
+		return Guests{}, fmt.Errorf("address: %w", err)
+	}
+	g, errs := loadGuests(f.Guests, subnet, f.Endpoint)
+	return g, errors.Join(errs...)
+}
+
+// loadGuests fills in guest settings, with defaults for anything unset.
+func loadGuests(f *GuestFile, subnet netip.Prefix, endpoint string) (Guests, []error) {
+	g := Guests{
+		TTL: DefaultGuestTTL, QuotaBytes: DefaultGuestQuota, MaxActive: DefaultGuestMaxActive,
+		PerIPPerDay: DefaultGuestPerIPPerDay, RateLimitMbps: DefaultGuestRateMbps,
+		AllowedOrigins: DefaultGuestOrigins, MonthlyCapBytes: DefaultGuestMonthlyCap,
+	}
+	// By default the endpoint's TLS name is <ip>.sslip.io, which resolves to
+	// the server without any DNS setup.
+	if ip, err := netip.ParseAddr(endpoint); err == nil && ip.Is4() {
+		g.Hostname = ip.String() + ".sslip.io"
+	}
+	if pool, ok := GuestPool(subnet); ok {
+		g.Pool = pool
+	}
+	if f == nil {
+		return g, nil
+	}
+	var errs []error
+	g.Enabled = f.Enabled
+	if f.TTL != "" {
+		d, err := time.ParseDuration(f.TTL)
+		if err != nil || d <= 0 {
+			errs = append(errs, fmt.Errorf("guests.ttl: want a duration like \"1h\" or \"30m\", got %q", f.TTL))
+		}
+		g.TTL = d
+	}
+	if f.QuotaBytes != 0 {
+		g.QuotaBytes = f.QuotaBytes
+	}
+	if f.MaxActiveGuests != 0 {
+		g.MaxActive = f.MaxActiveGuests
+	}
+	if f.PerIPPerDay != 0 {
+		g.PerIPPerDay = f.PerIPPerDay
+	}
+	if f.RateLimitMbps != 0 {
+		g.RateLimitMbps = f.RateLimitMbps
+	}
+	if f.GuestHostname != "" {
+		g.Hostname = f.GuestHostname
+	}
+	if len(f.AllowedOrigins) > 0 {
+		g.AllowedOrigins = f.AllowedOrigins
+	}
+	if f.MonthlyCapBytes != 0 {
+		g.MonthlyCapBytes = f.MonthlyCapBytes
+	}
+	if g.MaxActive < 0 || g.PerIPPerDay < 0 || g.RateLimitMbps < 0 {
+		errs = append(errs, errors.New("guests: limits can't be negative"))
+	}
+	if g.Enabled {
+		if g.Hostname == "" {
+			errs = append(errs, errors.New("guests.guest_hostname: required when guests are enabled (the endpoint's public name, for its certificate)"))
+		}
+		if !g.Pool.IsValid() {
+			errs = append(errs, fmt.Errorf("guests: the tunnel subnet %s is too small to set aside addresses for guests", subnet.Masked()))
+		}
+	}
+	return g, errs
 }
 
 func LoadClient(path string) (*Client, error) {

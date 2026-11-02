@@ -106,6 +106,13 @@ type testNet struct {
 // start runs a server and a connected client over the given transport.
 func start(t *testing.T, transport string, loadThreshold int) *testNet {
 	t.Helper()
+	return startPeer(t, transport, loadThreshold, config.Peer{})
+}
+
+// startPeer is start with the client's peer entry customized (for guests);
+// its name, key and address are filled in.
+func startPeer(t *testing.T, transport string, loadThreshold int, peer config.Peer) *testNet {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	tn := &testNet{server: newFakeTun(), client: newFakeTun(), serverKey: privateKey(t), clientKey: privateKey(t)}
@@ -134,9 +141,10 @@ func start(t *testing.T, transport string, loadThreshold int) *testNet {
 	server := NewServer(&config.Server{
 		PrivateKey: tn.serverKey,
 		Address:    netip.MustParsePrefix("10.8.0.1/24"),
-		Peers: []config.Peer{{
-			Name: "laptop", PublicKey: tn.clientKey.Public(), Address: netip.MustParseAddr("10.8.0.2"),
-		}},
+		Peers: func() []config.Peer {
+			peer.Name, peer.PublicKey, peer.Address = "laptop", tn.clientKey.Public(), netip.MustParseAddr("10.8.0.2")
+			return []config.Peer{peer}
+		}(),
 	}, tn.server, st)
 	server.LoadThreshold = loadThreshold
 	tn.serverVPN = server

@@ -15,7 +15,7 @@ func RouteAllTraffic(tunName string, server netip.Addr) (Cleanup, error) {
 	return nil, errUnsupported
 }
 
-func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, error) {
+func EnableNAT(tunName, outInterface string, subnet, guestPool netip.Prefix) (Cleanup, error) {
 	return nil, errUnsupported
 }
 

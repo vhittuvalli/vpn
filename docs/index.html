@@ -91,6 +91,25 @@ footer p { margin: 0; }
   header img { width: 64px; height: 64px; }
   h1 { font-size: 1.7rem; }
 }
+.try { margin: 1rem 0 0; }
+.try-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.try-row .button { border: 0; cursor: pointer; font: inherit; font-weight: 600; }
+.try-row .button:disabled { opacity: 0.6; cursor: default; }
+#guest-slots { font-size: 0.9rem; color: var(--muted); }
+#guest-result { margin-top: 1rem; }
+#guest-result pre code { word-break: break-all; white-space: pre-wrap; }
+#guest-error { margin-top: 0.75rem; color: var(--text); }
+.after { margin: -0.75rem 0 2rem; padding: 1rem 1.25rem; border: 1px solid var(--rule); border-radius: 10px; }
+.after:focus { outline: none; }
+.after ol { margin: 0.6rem 0 0; }
+.after li { margin-bottom: 0.6rem; }
+.after li:last-child { margin-bottom: 0; }
+.after .linkish { font: inherit; color: var(--link); background: none; border: 0; padding: 0; cursor: pointer; }
+.after .linkish:hover { text-decoration: underline; }
+#guest-usage { margin-top: 0.9rem; max-width: 22rem; }
+#guest-usage .meter { height: 6px; border-radius: 3px; background: var(--code-bg); overflow: hidden; }
+#guest-usage .meter span { display: block; height: 100%; width: 0; background: var(--button); border-radius: 3px; }
+#guest-usage small { display: block; margin-top: 0.35rem; font-size: 0.85rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -108,8 +127,36 @@ footer p { margin: 0; }
     <p id="dl-info">Version 0.2.2 · macOS 12 or later · Apple silicon and Intel. On Linux? <a href="#linux">Use the command line version.</a></p>
   </div>
 
+  <div class="after" id="after-download" tabindex="-1" hidden>
+    <strong>Your download has started.</strong> Three steps from here:
+    <ol>
+      <li>Open <code id="dmg-name">VPN.dmg</code> from your Downloads folder and drag VPN into Applications.</li>
+      <li>Open VPN. Because it isn't signed by Apple, macOS says it can't verify it; click <strong>Done</strong>. Then open System Settings → Privacy &amp; Security, scroll down to the message that VPN was blocked, and click <strong>Open Anyway</strong>. After that, VPN asks for your password once to set up the part that manages your connection.</li>
+      <li>Paste an access key when it asks. Don't have one? <button class="linkish" id="after-guest" type="button">Get a free guest key</button> that works for an hour.</li>
+    </ol>
+  </div>
+
   <p>I built this to learn how VPNs actually work. It started as a command line tool and turned into a small Mac app. The encryption follows WireGuard's design, with ML-KEM and ML-DSA layered on top, so traffic recorded today should stay private even once someone has a quantum computer.</p>
   <p>There's no company and no account. You (or a friend) run the server, and every device gets its own access key.</p>
+
+  <h2 id="try">Try it free for an hour</h2>
+  <p>No server? Borrow mine. Get a guest key here, then paste it into the app (or <code>sudo vpn connect</code> on Linux). It works for one hour or 500 MB, whichever comes first. The demo has a fixed bandwidth budget each month; when it's used up, guest keys pause until the next month.</p>
+  <div class="try">
+    <div class="try-row">
+      <button class="button" id="guest-btn" type="button">Get a guest key</button>
+      <span id="guest-slots"></span>
+    </div>
+    <div id="guest-usage" hidden>
+      <div class="meter" role="progressbar" aria-label="Demo bandwidth used this month" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+      <small id="guest-usage-text"></small>
+    </div>
+    <div id="guest-result" hidden>
+      <div class="code"><button class="copy" type="button" data-copy="guest-key">Copy</button><pre><code id="guest-key"></code></pre></div>
+      <p id="guest-meta" class="muted"></p>
+    </div>
+    <p id="guest-error" role="status" hidden></p>
+  </div>
+  <p class="muted">This is a demo server, so a few things to know. Your traffic leaves from my server in Bangalore, India, so websites will see an Indian IP address. Guests get about 5 Mbit/s, and outgoing email (port 25) is blocked. The server records when each guest key was issued and the IP address that asked for it, and while a key exists, when it connects and how much data it has used. It doesn't log which sites you visit.</p>
 
   <h2>Getting set up</h2>
   <ol>
@@ -174,7 +221,119 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
 
 <script>
 (function () {
+  // Guest keys from the demo server.
+  var API = "https://139.59.79.156.sslip.io";
+  var btn = document.getElementById("guest-btn");
+  var slots = document.getElementById("guest-slots");
+  var result = document.getElementById("guest-result");
+  var errorBox = document.getElementById("guest-error");
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.hidden = false;
+  }
+
+  var resetsAt = null;
+
+  function gib(bytes) {
+    var g = bytes / 1073741824;
+    return (g >= 10 || g === Math.round(g) ? Math.round(g) : g.toFixed(1));
+  }
+
+  function day(iso) {
+    return new Date(iso).toLocaleDateString([], { month: "long", day: "numeric", timeZone: "UTC" });
+  }
+
+  function refreshSlots() {
+    if (!window.fetch) return;
+    fetch(API + "/guest-status")
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (st) {
+        if (st.resets_at) resetsAt = st.resets_at;
+        if (st.available) {
+          slots.textContent = (st.max - st.active) + " of " + st.max + " guest spots free";
+        } else if (st.reason === "budget") {
+          slots.textContent = "This month's demo bandwidth is used up; back on " + day(st.resets_at);
+          btn.disabled = true;
+        } else if (st.reason === "disabled") {
+          slots.textContent = "Guest keys are switched off right now";
+          btn.disabled = true;
+        } else {
+          slots.textContent = "All guest spots are taken right now";
+        }
+        if (st.month_cap_bytes) {
+          var pct = Math.min(100, st.month_sent_bytes / st.month_cap_bytes * 100);
+          var usage = document.getElementById("guest-usage");
+          usage.querySelector(".meter span").style.width = pct.toFixed(1) + "%";
+          usage.querySelector(".meter").setAttribute("aria-valuenow", Math.round(pct));
+          document.getElementById("guest-usage-text").textContent =
+            gib(st.month_sent_bytes) + " of " + gib(st.month_cap_bytes) + " GiB of this month's demo bandwidth used";
+          usage.hidden = false;
+        }
+      })
+      .catch(function () { slots.textContent = ""; });
+  }
+
+  function mb(bytes) { return Math.round(bytes / 1e6) + " MB"; }
+
+  btn.addEventListener("click", function () {
+    btn.disabled = true;
+    errorBox.hidden = true;
+    fetch(API + "/guest-key", { method: "POST" })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) { return { status: r.status, body: body }; });
+      })
+      .then(function (res) {
+        if (res.status === 200 && res.body.key) {
+          document.getElementById("guest-key").textContent = res.body.key;
+          var until = new Date(res.body.expires_at);
+          document.getElementById("guest-meta").textContent =
+            "Works until " + until.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
+            " or until you've used " + mb(res.body.quota_bytes) + " of data. Treat it like a password.";
+          result.hidden = false;
+          btn.textContent = "Got it";
+          refreshSlots();
+          return;
+        }
+        btn.disabled = false;
+        var code = res.body.code;
+        if (res.status === 429) {
+          showError("You've already had today's guest keys. Try again tomorrow, or run your own server below.");
+        } else if (code === "full") {
+          showError("All the guest spots are taken right now. Try again in a few minutes.");
+        } else if (code === "budget") {
+          showError("This month's demo bandwidth is used up" + (resetsAt ? ". Guest keys come back on " + day(resetsAt) + "." : ". Guest keys come back next month."));
+        } else if (code === "disabled") {
+          showError("Guest keys are switched off at the moment. You can still run your own server below.");
+        } else if (code === "busy") {
+          showError("Lots of people are asking right now. Try again in a minute.");
+        } else {
+          showError("Something went wrong on the demo server. Try again in a bit.");
+        }
+      })
+      .catch(function () {
+        btn.disabled = false;
+        showError("Couldn't reach the demo server. It may be down; try again later.");
+      });
+  });
+  refreshSlots();
+
   var dl = document.getElementById("dl");
+
+  // After the click (the download itself goes ahead normally), show what
+  // to do next right under the button.
+  var after = document.getElementById("after-download");
+  dl.addEventListener("click", function () {
+    setTimeout(function () {
+      after.hidden = false;
+      after.focus();
+    }, 300);
+  });
+  document.getElementById("after-guest").addEventListener("click", function () {
+    location.hash = "try";
+    var b = document.getElementById("guest-btn");
+    if (!b.disabled) b.click();
+  });
   var info = document.getElementById("dl-info");
 
   if (window.fetch) {
@@ -184,6 +343,7 @@ sudo vpn connect vpn://your-access-key</code></pre></div>
         var dmg = (rel.assets || []).filter(function (a) { return /\.dmg$/.test(a.name); })[0];
         if (!dmg) return;
         dl.href = dmg.browser_download_url;
+        document.getElementById("dmg-name").textContent = dmg.name;
         info.firstChild.textContent = "Version " + rel.tag_name.replace(/^v/, "") + " · " +
           (dmg.size / 1048576).toFixed(1) + " MB · macOS 12 or later · Apple silicon and Intel. On Linux? ";
       })

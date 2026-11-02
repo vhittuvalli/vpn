@@ -9,7 +9,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 	"text/tabwriter"
@@ -19,6 +18,7 @@ import (
 	"github.com/vhittuvalli/vpn/internal/config"
 	"github.com/vhittuvalli/vpn/internal/human"
 	"github.com/vhittuvalli/vpn/internal/protocol"
+	"github.com/vhittuvalli/vpn/internal/registry"
 	"github.com/vhittuvalli/vpn/internal/vpn"
 )
 
@@ -47,8 +47,6 @@ TimeoutStopSec=15
 [Install]
 WantedBy=multi-user.target
 `
-
-var deviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`)
 
 // setup turns a fresh Linux machine into a server: config, systemd service,
 // firewall rules, and a first access key.
@@ -164,63 +162,12 @@ func invite(args []string) error {
 // addDevice adds a peer with a fresh key and the next free address, tells
 // the running server, and returns the device's access key.
 func addDevice(path, name string) (*accesskey.Key, error) {
-	if !deviceName.MatchString(name) {
-		return nil, fmt.Errorf("%q isn't a usable name: use up to 32 letters, digits, dots, dashes or underscores", name)
-	}
-	f, err := config.ReadServerFile(path)
+	added, err := registry.Registry{Path: path}.AddDevice(name)
 	if err != nil {
-		return nil, err
-	}
-	if f.Endpoint == "" {
-		return nil, fmt.Errorf(`%s has no "endpoint": add "endpoint": "<this server's public IP>" to it`, path)
-	}
-	serverKey, err := protocol.ParsePrivateKey(f.PrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("%s: private_key: %w", path, err)
-	}
-	subnet, err := netip.ParsePrefix(f.Address)
-	if err != nil {
-		return nil, fmt.Errorf("%s: address: %w", path, err)
-	}
-	used := map[netip.Addr]bool{subnet.Addr(): true}
-	for _, p := range f.Peers {
-		if p.Name == name {
-			return nil, fmt.Errorf("a device named %q already exists; pick another name, or remove it first with: sudo vpn revoke %s", name, name)
-		}
-		if a, err := netip.ParseAddr(p.Address); err == nil {
-			used[a] = true
-		}
-	}
-	addr := netip.Addr{}
-	for a := subnet.Masked().Addr().Next(); subnet.Contains(a); a = a.Next() {
-		if !used[a] && subnet.Contains(a.Next()) { // skip the broadcast address
-			addr = a
-			break
-		}
-	}
-	if !addr.IsValid() {
-		return nil, fmt.Errorf("no free addresses left in %s", subnet.Masked())
-	}
-
-	device, err := protocol.GeneratePrivateKey()
-	if err != nil {
-		return nil, err
-	}
-	f.Peers = append(f.Peers, config.PeerFile{Name: name, PublicKey: device.Public().String(), Address: addr.String()})
-	if err := f.Write(path); err != nil {
 		return nil, err
 	}
 	reloadServer()
-
-	udp := f.ListenPort
-	if udp == 0 {
-		udp = config.DefaultUDPPort
-	}
-	return &accesskey.Key{
-		Name: name, Host: f.Endpoint, UDPPort: udp, HTTPSPort: f.HTTPSPort,
-		ServerPublicKey: serverKey.Public(), PrivateKey: device,
-		Address: netip.PrefixFrom(addr, subnet.Bits()),
-	}, nil
+	return added.Key, nil
 }
 
 func revoke(args []string) error {
@@ -235,22 +182,12 @@ func revoke(args []string) error {
 	if err := requireRoot(); err != nil {
 		return err
 	}
-	f, err := config.ReadServerFile(*path)
+	removed, err := registry.Registry{Path: *path}.Remove(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	kept := f.Peers[:0]
-	for _, p := range f.Peers {
-		if p.Name != fs.Arg(0) {
-			kept = append(kept, p)
-		}
-	}
-	if len(kept) == len(f.Peers) {
+	if len(removed) == 0 {
 		return fmt.Errorf("no device named %q; see the list with: sudo vpn devices", fs.Arg(0))
-	}
-	f.Peers = kept
-	if err := f.Write(*path); err != nil {
-		return err
 	}
 	reloadServer()
 	fmt.Printf("Removed %s. Its access key no longer works.\n", fs.Arg(0))
@@ -289,7 +226,7 @@ func devices(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "DEVICE\tADDRESS\tSTATUS\tLAST SEEN\tFROM\tDOWNLOADED\tUPLOADED")
+	fmt.Fprintln(w, "DEVICE\tADDRESS\tSTATUS\tLAST SEEN\tFROM\tDOWNLOADED\tUPLOADED\tGUEST LIMITS")
 	for _, p := range f.Peers {
 		st, known := byKey[p.PublicKey]
 		state, seen, from, down, up := "offline", "never", "-", "-", "-"
@@ -305,7 +242,7 @@ func devices(args []string) error {
 			}
 			down, up = human.Bytes(st.TxBytes), human.Bytes(st.RxBytes)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, state, seen, from, down, up)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Address, state, seen, from, down, up, guestLimits(p, st, now))
 	}
 	w.Flush()
 	switch {
@@ -315,6 +252,23 @@ func devices(args []string) error {
 		fmt.Println("\nThe vpn server doesn't seem to be running; showing the last known usage.")
 	}
 	return nil
+}
+
+// guestLimits describes a guest's remaining time and data use, e.g.
+// "42m left · 120.5 MB of 500.0 MB"; "-" for regular devices.
+func guestLimits(p config.PeerFile, st vpn.PeerStats, now time.Time) string {
+	if !p.Guest {
+		return "-"
+	}
+	left := "expired"
+	if t, err := time.Parse(time.RFC3339, p.ExpiresAt); err == nil && now.Before(t) {
+		left = human.Duration(t.Sub(now)) + " left"
+	}
+	used := human.Bytes(st.RxBytes + st.TxBytes)
+	if p.QuotaBytes == 0 {
+		return left + " · " + used + " used"
+	}
+	return left + " · " + used + " of " + human.Bytes(p.QuotaBytes)
 }
 
 // reloadServer asks a running vpn service to re-read its device list.

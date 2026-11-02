@@ -52,6 +52,6 @@ func RouteAllTraffic(tunName string, server netip.Addr) (Cleanup, error) {
 	)
 }
 
-func EnableNAT(tunName, outInterface string, subnet netip.Prefix) (Cleanup, error) {
+func EnableNAT(tunName, outInterface string, subnet, guestPool netip.Prefix) (Cleanup, error) {
 	return nil, fmt.Errorf("NAT is only supported on a Linux server")
 }

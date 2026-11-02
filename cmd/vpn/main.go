@@ -37,6 +37,7 @@ const usage = `usage:
     sudo vpn invite NAME            add a device and print its access key
     sudo vpn revoke NAME            remove a device
     sudo vpn devices                list devices
+    sudo vpn guests [on|off|purge]  self-serve guest keys for visitors to your site
 
   Connect:
     sudo vpn connect ACCESS_KEY     connect until Ctrl-C (add --https to look like web traffic)
@@ -86,6 +87,8 @@ func main() {
 		err = revoke(os.Args[2:])
 	case "devices":
 		err = devices(os.Args[2:])
+	case "guests":
+		err = guests(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
 	case "app":
@@ -168,7 +171,7 @@ func runServer(args []string) error {
 		return err
 	}
 	if cfg.NATInterface != "" {
-		undo, err := netcfg.EnableNAT(dev.Name(), cfg.NATInterface, cfg.Address)
+		undo, err := netcfg.EnableNAT(dev.Name(), cfg.NATInterface, cfg.Address, cfg.Guests.Pool)
 		if err != nil {
 			return err
 		}
@@ -221,20 +224,35 @@ func runServer(args []string) error {
 	}()
 	defer srv.WriteStatus(status)
 
-	// `vpn invite` and `vpn revoke` edit the config and send SIGHUP; only
-	// the device list is reloaded, without dropping anyone else.
+	// Guest access: the key endpoint (when enabled) and the sweep that
+	// removes guests whose time or data has run out.
+	state := newServerState(path, srv, cfg)
+	defer state.close()
+	go func() {
+		sweep := time.NewTicker(guestSweepInterval)
+		defer sweep.Stop()
+		meter := time.NewTicker(meterInterval)
+		defer meter.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-meter.C:
+				state.measure(now)
+			case now := <-sweep.C:
+				state.sweep(now)
+			}
+		}
+	}()
+
+	// `vpn invite`, `vpn revoke` and `vpn guests` edit the config and send
+	// SIGHUP; the device list is reloaded without dropping anyone else.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	go func() {
 		for range hup {
-			next, err := config.LoadServer(path)
-			if err != nil {
-				log.Printf("reload: %v (keeping the current devices)", err)
-				continue
-			}
-			added, removed := srv.SetPeers(next.Peers)
-			log.Printf("reloaded devices: %d total, %d added, %d removed", len(next.Peers), added, removed)
+			state.reload("SIGHUP")
 		}
 	}()
 
